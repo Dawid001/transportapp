@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapGeoJSONFeature } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { ApiVehicle, Departure, Journey, Mode, PlanEndpoint, PlanResponse, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
+import type { ApiVehicle, Departure, Journey, Mode, PlanEndpoint, PlanNotice, PlanResponse, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
 import { boundsOf, tripRouteGeo } from "@/lib/routeGeo";
 import { endpointCoords, endpointParams, journeyGeo, journeyPoints } from "@/lib/journeyGeo";
 import { toSaved, useFavorites, type Favorite, type SavedEndpoint } from "@/lib/favorites";
@@ -70,7 +70,7 @@ export function LiveMap() {
   const [from, setFrom] = useState<PlanEndpoint | null>(null);
   const [to, setTo] = useState<PlanEndpoint | null>(null);
   const [planTime, setPlanTime] = useState<number | null>(null);
-  const [plan, setPlan] = useState<{ key: string; journeys: Journey[] } | null>(null);
+  const [plan, setPlan] = useState<{ key: string; journeys: Journey[]; notice?: PlanNotice } | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -657,7 +657,7 @@ export function LiveMap() {
       fetch(`/api/plan?${params}`, { signal: controller.signal })
         .then((res) => (res.ok ? (res.json() as Promise<PlanResponse>) : Promise.reject(new Error(`HTTP ${res.status}`))))
         .then((data) => {
-          setPlan({ key: planKey, journeys: data.journeys });
+          setPlan({ key: planKey, journeys: data.journeys, notice: data.notice });
           setPlanError(null);
         })
         .catch(() => !controller.signal.aborted && setPlanError("Plannen mislukt. Draait de backend?"));
@@ -792,6 +792,7 @@ export function LiveMap() {
       {!selected && !selectedStop && to && (
         <JourneySheet
           journeys={journeys}
+          notice={plan && plan.key === planKey ? plan.notice : undefined}
           loading={!!from && !journeys && !planError}
           error={!from ? (locationError ?? "Kies een vertrekpunt (of Mijn locatie).") : planError}
           selected={selectedJourney}

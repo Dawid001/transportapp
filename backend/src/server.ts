@@ -436,7 +436,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const journeys = planner.plan(from, to, at, 5);
     await enrichTrainLegs(journeys);
     addLegAlerts(journeys);
-    return sendJson(res, 200, { from, to, time: at, journeys });
+    // Rijdt er (voorlopig) niets meer, bv. midden in de nacht? Dan zeggen we dat met de eerste reis erbij.
+    const firstTransit = journeys
+      .flatMap((j) => j.legs)
+      .filter((l) => l.type === "transit")
+      .reduce<number | undefined>((min, l) => (min === undefined || l.departure < min ? l.departure : min), undefined);
+    const notice =
+      firstTransit === undefined
+        ? { kind: "noTransit" as const }
+        : firstTransit - at > 2 * 3600
+          ? { kind: "noServiceUntil" as const, firstDeparture: firstTransit }
+          : undefined;
+    return sendJson(res, 200, { from, to, time: at, journeys, notice });
   }
 
   if (url.pathname === "/api/stops") {
@@ -453,6 +464,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const time = Number(url.searchParams.get("time"));
     const from = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
     const list = departures.forStop(stop, from, { trains: stop.modes.includes("train") ? await trainBoard(stop.stopIds, "departures") : undefined });
+    // Rijdt er de komende 1,5 uur niets? Dan het eerstvolgende vertrek (bv. morgenochtend) erbij.
+    const next = list.length === 0 ? departures.forStop(stop, from, { windowSec: 30 * 3600, limit: 1 })[0] : undefined;
     // Meldingen voor deze halte, alleen voor lijnen die hier (binnenkort) vertrekken of zonder lijn.
     const routeIds = new Set(list.map((d) => gtfs.lookup(d.tripId)?.routeId).filter((r): r is string => !!r));
     const stationCodes = nsRealtime ? stop.stopIds.map((id) => nsRealtime.stationCode(id)).filter((c): c is string => !!c) : undefined;
@@ -462,6 +475,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       updatedAt: tripUpdates?.updatedAt ?? null,
       alerts: alerts.forStops(stop.stopIds, { routeIds, stationCodes: stationCodes?.slice(0, 1) }),
       departures: list,
+      next,
     });
   }
 

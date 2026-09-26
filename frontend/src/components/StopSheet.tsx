@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { Departure, DeparturesResponse, StopSummary } from "@/lib/types";
 import { AlertList } from "./AlertList";
 import { useFavorites } from "@/lib/favorites";
-import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
+import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
 // De backend ververst verwachte tijden eens per minuut.
 const REFRESH_MS = 30_000;
@@ -104,7 +104,7 @@ export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: P
           {!departures && !error && <p className="px-2 py-3 text-sm text-neutral-500">Vertrektijden laden…</p>}
           {error && !departures && <p className="px-2 py-3 text-sm text-red-600">Vertrektijden konden niet worden geladen.</p>}
           {departures && departures.length === 0 && (
-            <p className="px-2 py-3 text-sm text-neutral-500">Geen vertrekken in de komende 1,5 uur.</p>
+            <NoService next={data?.stop.id === stop.id ? data.next : undefined} now={now} />
           )}
           {departures && departures.length > 0 && (
             <ol className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -115,6 +115,28 @@ export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: P
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+/** Er rijdt de komende 1,5 uur niets vanaf deze halte: zeg wanneer wel weer. */
+function NoService({ next, now }: { next?: Departure; now: number }) {
+  if (!next) {
+    return <p className="px-2 py-3 text-sm text-neutral-500">Er vertrekt vanaf deze halte de komende 30 uur niets volgens de dienstregeling.</p>;
+  }
+  const day = dayLabel(next.scheduled, now);
+  return (
+    <div className="mx-2 my-2 rounded-xl bg-indigo-50 px-3 py-2.5 text-sm text-indigo-900 dark:bg-indigo-950 dark:text-indigo-100">
+      <p className="font-medium">🌙 Er rijdt nu niets meer vanaf deze halte.</p>
+      <p className="mt-1">
+        Eerste vertrek: <span className="font-semibold">{day ? `${day} ` : ""}{formatClock(next.scheduled)}</span>
+        <span className="ml-1.5 inline-flex items-center gap-1">
+          <span className="rounded px-1.5 py-px text-xs font-bold text-white" style={{ backgroundColor: MODE_COLORS[next.mode] }}>
+            {next.line ?? MODE_LABELS[next.mode]}
+          </span>
+          → {next.headsign}
+        </span>
+      </p>
     </div>
   );
 }
@@ -143,7 +165,14 @@ function DepartureRow({ departure: d, now, onShow }: { departure: Departure; now
           ) : d.skipped ? (
             <span className="text-red-600 dark:text-red-400">Stopt hier niet</span>
           ) : (
-            [platformLabel, d.live ? "● live" : undefined].filter(Boolean).join(" · ")
+            <>
+              {[platformLabel, d.live ? "● live" : undefined].filter(Boolean).join(" · ")}
+              {d.last && (
+                <span className="ml-1.5 rounded bg-indigo-50 px-1 py-px font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+                  🌙 laatste rit
+                </span>
+              )}
+            </>
           )}
         </span>
       </span>

@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ApiVehicle, Journey, Leg, TransitLeg } from "@/lib/types";
+import type { ApiVehicle, Journey, Leg, PlanNotice, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
-import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
+import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
 type Props = {
   journeys: Journey[] | null;
+  /** Rijdt er (voorlopig) niets meer? */
+  notice?: PlanNotice;
   loading: boolean;
   error: string | null;
   selected: number | null;
@@ -32,7 +34,7 @@ function expectedDeparture(leg: TransitLeg, vehicle?: ApiVehicle): number {
 }
 
 /** Onderin: reisopties, en na het kiezen de reis stap voor stap met live status. */
-export function JourneySheet({ journeys, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
+export function JourneySheet({ journeys, notice, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
@@ -82,6 +84,24 @@ export function JourneySheet({ journeys, loading, error, selected, vehicles, onS
             <p className="px-2 py-3 text-sm text-neutral-500">Geen reis gevonden. Probeer een ander tijdstip of een halte in de buurt.</p>
           ) : (
             <ol className="space-y-1.5">
+              {notice && (
+                <li className="rounded-xl bg-indigo-50 px-3 py-2.5 text-sm text-indigo-900 dark:bg-indigo-950 dark:text-indigo-100">
+                  {notice.kind === "noServiceUntil" ? (
+                    <>
+                      <p className="font-medium">🌙 Er rijdt nu niets meer.</p>
+                      <p className="mt-0.5">
+                        De eerste reis met het OV vertrekt{" "}
+                        <span className="font-semibold">
+                          {dayLabel(notice.firstDeparture, now) || "vandaag"} om {formatClock(notice.firstDeparture)}
+                        </span>
+                        .
+                      </p>
+                    </>
+                  ) : (
+                    <p className="font-medium">Er is geen reis met het OV gevonden. Lopen kan wel:</p>
+                  )}
+                </li>
+              )}
               {journeys?.map((j, i) => (
                 <li key={i}>
                   <JourneyOption journey={j} vehicles={vehicles} now={now} onClick={() => onSelect(i)} />
@@ -106,6 +126,11 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
   return (
     <button onClick={onClick} className="w-full rounded-xl px-3 py-2.5 text-left ring-1 ring-neutral-200 hover:bg-neutral-50 dark:ring-neutral-700 dark:hover:bg-neutral-800">
       <div className="flex items-baseline gap-2">
+        {dayLabel(j.departure, now) && (
+          <span className="self-center rounded bg-indigo-50 px-1.5 py-px text-xs font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+            {dayLabel(j.departure, now)}
+          </span>
+        )}
         <span className={`text-base font-semibold tabular-nums ${canceled ? "text-neutral-400 line-through" : ""}`}>
           {formatClock(j.departure)} → {formatClock(j.arrival)}
         </span>
@@ -123,7 +148,11 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
           <span className="text-red-600 dark:text-red-400">Een rit in deze reis valt uit</span>
         ) : (
           <>
-            {leaveIn <= 0 ? "Vertrek nu" : leaveIn < 60 ? `Vertrek over ${leaveIn} min` : `Vertrek om ${formatClock(j.departure)}`}
+            {leaveIn <= 0
+              ? "Vertrek nu"
+              : leaveIn < 60
+                ? `Vertrek over ${leaveIn} min`
+                : `Vertrek ${dayLabel(j.departure, now) ? `${dayLabel(j.departure, now)} ` : ""}om ${formatClock(j.departure)}`}
             {vehicle && <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">● live</span>}
             {delayMinutes(delay) !== 0 && <span className={`ml-1.5 ${DELAY_TONE_CLASSES[delayTone(delay)]}`}>{formatDelay(delay)} min</span>}
             {alertCount > 0 && <span className="ml-1.5 text-amber-600 dark:text-amber-400">⚠ {alertCount === 1 ? "melding" : `${alertCount} meldingen`}</span>}
@@ -149,6 +178,7 @@ function JourneyDetail({ journey: j, vehicles, now, onShowVehicle }: { journey: 
   return (
     <div className="px-2">
       <p className="mb-2 text-base font-semibold tabular-nums">
+        {dayLabel(j.departure, now) && <span className="mr-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400">{dayLabel(j.departure, now)}</span>}
         {formatClock(j.departure)} → {formatClock(j.arrival)}
         <span className="ml-2 text-sm font-normal text-neutral-500">
           {durationText(j.arrival - j.departure)} · {j.transfers === 0 ? "direct" : `${j.transfers}× overstappen`}

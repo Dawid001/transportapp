@@ -96,13 +96,23 @@ export type Departure = {
   canceled?: boolean;
   skipped?: boolean;
   live?: boolean;
+  /** Laatste rit van deze lijn in deze richting hier voor de nacht (of een lange pauze). */
+  last?: boolean;
 };
 
 /** Melding: omleiding, tijdelijke halte, werkzaamheden of storing. */
 export type Alert = { id: string; source: "ov" | "ns"; title: string; text?: string };
 
 /** GET /api/stops/:id/departures */
-export type DeparturesResponse = { stop: StopSummary; from: number; updatedAt: number | null; alerts: Alert[]; departures: Departure[] };
+export type DeparturesResponse = {
+  stop: StopSummary;
+  from: number;
+  updatedAt: number | null;
+  alerts: Alert[];
+  departures: Departure[];
+  /** Eerstvolgende vertrek als er de komende 1,5 uur niets rijdt. */
+  next?: Departure;
+};
 
 /** Begin- of eindpunt in de planner: een halte, een plaats/adres of je eigen locatie. */
 export type PlanEndpoint =
@@ -139,4 +149,7 @@ export type Leg = WalkLeg | TransitLeg;
 export type Journey = { departure: number; arrival: number; transfers: number; legs: Leg[] };
 
 /** GET /api/plan */
-export type PlanResponse = { from: { name: string }; to: { name: string }; time: number; journeys: Journey[] };
+/** Er rijdt (voorlopig) niets: geen OV gevonden, of pas weer vanaf een later tijdstip. */
+export type PlanNotice = { kind: "noTransit" } | { kind: "noServiceUntil"; firstDeparture: number };
+
+export type PlanResponse = { from: { name: string }; to: { name: string }; time: number; journeys: Journey[]; notice?: PlanNotice };

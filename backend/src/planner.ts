@@ -542,7 +542,17 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
     }
 
     console.log(`Planner: ${from.name} → ${to.name}: ${journeys.length} opties in ${Date.now() - started} ms`);
-    return journeys.sort((a, b) => a.departure - b.departure || a.arrival - b.arrival).slice(0, count + 1);
+    // Opties waarbij je eerder vertrekt maar niet eerder aankomt dan een andere optie, weglaten
+    // (bv. 's nachts de laatste trein nemen en dan uren op de eerste bus wachten). Lopen blijft staan.
+    const transitOnly = journeys.filter((j) => j.legs.some((l) => l.type === "transit"));
+    const useful = journeys.filter(
+      (j) =>
+        !j.legs.some((l) => l.type === "transit") ||
+        !transitOnly.some(
+          (o) => o !== j && o.departure >= j.departure && o.arrival <= j.arrival && (o.departure > j.departure || o.arrival < j.arrival || o.transfers < j.transfers),
+        ),
+    );
+    return useful.sort((a, b) => a.departure - b.departure || a.arrival - b.arrival).slice(0, count + 1);
   }
 
   /** Dienstregeling van vandaag alvast klaarzetten, zodat de eerste zoekopdracht niet wacht. */

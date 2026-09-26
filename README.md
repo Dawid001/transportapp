@@ -186,3 +186,9 @@ Per station de NS-vertrektijden en -aankomsttijden (60 s gecachet): werkelijke t
 
 ### Favorieten
 ☆ bij een halte of een route; wordt in je browser bewaard (localStorage). Favoriete haltes staan bovenaan in Van/Naar, bewaarde routes als knop onder het paneel.
+
+### Als er niets (meer) rijdt
+- **Vertrekbord**: rijdt er de komende 1,5 uur niets, dan staat er "🌙 Er rijdt nu niets meer vanaf deze halte. Eerste vertrek: morgen 06:05 · 182 → Leiden CS" (`next` in `/api/stops/:id/departures`).
+- **Laatste rit**: het label "🌙 laatste rit" staat bij een vertrek als deze lijn in deze richting hier de komende 6 uur niet meer vertrekt. Dit wordt over de dienstdagen heen bekeken, zodat nachttreinen die op de volgende dienstdag staan meetellen.
+- **Planner**: vertrekt de eerste OV-reis pas meer dan 2 uur na het gevraagde tijdstip, dan staat er "🌙 Er rijdt nu niets meer. De eerste reis vertrekt morgen om 05:46" (`notice` in `/api/plan`). Reizen op een andere dag krijgen het label "morgen" of een datum.
+- Opties die eerder vertrekken maar niet eerder aankomen dan een andere optie, laat de planner weg (bijvoorbeeld 's nachts de laatste trein nemen en dan uren op de eerste bus wachten).

@@ -27,6 +27,8 @@ export type Departure = {
   skipped?: boolean;
   /** Er rijdt nu een voertuig van deze rit op de kaart. */
   live?: boolean;
+  /** Laatste rit van deze lijn in deze richting hier voor een lange pauze (bv. de nacht). */
+  last?: boolean;
 };
 
 type Deps = {
@@ -36,6 +38,9 @@ type Deps = {
   tripUpdate: (tripId: string) => TripUpdateInfo | undefined;
   liveTripIds: () => Set<string>;
 };
+
+/** Zo lang geen volgende rit = "laatste rit" (voor de nacht of een lange pauze). */
+const LAST_RUN_GAP_S = 6 * 3600;
 
 export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripIds }: Deps) {
   const platformStmt = db.prepare("SELECT platform_code FROM stops WHERE stop_id = ?");
@@ -59,7 +64,9 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
     { windowSec = 90 * 60, limit = 40, trains }: { windowSec?: number; limit?: number; trains?: Map<string, TrainTime> } = {},
   ): Departure[] {
     const live = liveTripIds();
-    const out: Departure[] = [];
+    const out: (Departure & { lastKey: string })[] = [];
+    // Per lijn + richting alle vertrektijden hier (over de dienstdagen heen), voor "laatste rit".
+    const timesByKey = new Map<string, number[]>();
     const dates = [serviceDate(1), serviceDate(0), serviceDate(-1)];
 
     for (const date of dates) {
@@ -75,7 +82,21 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
           const pattern = timetable.patterns.get(patternId)!;
           // Aan de eindhalte vertrekt niets.
           if (index === pattern.stopIds.length - 1) continue;
-          for (const trip of trips.get(patternId) ?? []) {
+          const dayTrips = trips.get(patternId) ?? [];
+
+          // Alle vertrektijden van dit patroon hier (lijn + richting via de eerste rit; die zijn per patroon gelijk).
+          if (dayTrips.length) {
+            const info = lookup(dayTrips[0].tripId);
+            const key = `${info?.line}|${info?.headsign}`;
+            const list = timesByKey.get(key) ?? [];
+            for (const trip of dayTrips) {
+              const profile = timetable.profiles.get(trip.profileId);
+              if (profile) list.push(dayStart + trip.start + profile.dep[index]);
+            }
+            timesByKey.set(key, list);
+          }
+
+          for (const trip of dayTrips) {
             const profile = timetable.profiles.get(trip.profileId);
             if (!profile) continue;
             const dep = trip.start + profile.dep[index];
@@ -129,6 +150,7 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
               canceled: (matchesDay && update?.canceled) || train?.cancelled ? true : undefined,
               skipped: u?.skipped ? true : undefined,
               live: live.has(trip.tripId) || undefined,
+              lastKey: `${info?.line}|${info?.headsign}`,
             });
           }
         }
@@ -140,7 +162,12 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
     return out
       .sort((a, b) => (a.expected ?? a.scheduled) - (b.expected ?? b.scheduled))
       .filter((d) => !seen.has(d.tripId) && seen.add(d.tripId))
-      .slice(0, limit);
+      .slice(0, limit)
+      .map(({ lastKey, ...d }) => {
+        // Laatste rit = de komende 6 uur vertrekt deze lijn in deze richting hier niet meer.
+        const later = (timesByKey.get(lastKey) ?? []).some((t) => t > d.scheduled && t <= d.scheduled + LAST_RUN_GAP_S);
+        return later ? d : { ...d, last: true };
+      });
   }
 
   return { forStop };

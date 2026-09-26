@@ -66,3 +66,14 @@ export function formatDelay(delaySec: number | undefined): string {
   if (min < 0) return `−${-min}`;
   return "";
 }
+
+/** "" voor vandaag, "morgen", of bv. "di 29 sep" — om tijden op een andere dag duidelijk te maken. */
+export function dayLabel(unixSec: number, nowMs = Date.now()): string {
+  const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const day = new Date(unixSec * 1000);
+  const today = new Date(nowMs);
+  if (key(day) === key(today)) return "";
+  const tomorrow = new Date(nowMs + 86_400_000);
+  if (key(day) === key(tomorrow)) return "morgen";
+  return day.toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+}
