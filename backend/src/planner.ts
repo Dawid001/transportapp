@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { Alert } from "./alerts.js";
 import type { Mode, TripInfo } from "./gtfs/lookup.js";
 import { serviceDayStart } from "./time.js";
 import type { Timetable } from "./timetable.js";
@@ -47,6 +48,8 @@ export type TransitLeg = {
   /** Volgnummers (stop_sequence) van in- en uitstaphalte, om de live positie van het voertuig te duiden. */
   fromSequence: number;
   toSequence: number;
+  /** Meldingen voor dit reisdeel (omleiding, tijdelijke halte, storing). */
+  alerts?: Alert[];
   /** Lijn over de kaart: haltes van instappen t/m uitstappen. */
   path: [number, number][];
 };

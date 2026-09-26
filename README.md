@@ -158,3 +158,31 @@ Klik je op een voertuig, dan zie je per halte de verwachte tijd, de vertraging e
 - **NO_DATA**: vanaf die halte zijn er alleen geplande tijden.
 
 Verder: de NS API geeft soms een onvolledig antwoord (bijvoorbeeld 13 in plaats van ~195 treinen). Dan houdt de backend de vorige lijst vast.
+
+## Reisplanner, vertrekborden, meldingen en favorieten
+
+De app draait nu om **van waar je bent → waar je heen wilt**, met de live voertuigen van jouw reis.
+
+### Zoeken (Van / Naar)
+- **Haltes**: eigen index van ~25.000 haltes (`src/stopIndex.ts`). Perrons, sporen en beide rijrichtingen worden per halte-gebied samengevoegd, en haltes met dezelfde naam binnen 400 m ook. Ranking: hele woorden, stations en drukke knooppunten eerst, dichtbij de kaart iets hoger.
+- **Plaatsen, straten, adressen**: PDOK Locatieserver (`src/places.ts`, gratis, geen key). Postcodes alleen als je echt een postcode typt.
+- **Mijn locatie** via de browser. Is je locatie niet beschikbaar, kies dan een vertrekpunt.
+
+### Reisplanner (`src/planner.ts`, `GET /api/plan`)
+- RAPTOR op de dienstregeling in het geheugen (`src/timetable.ts`): maximaal 4 overstappen, lopen naar/van haltes tot 1 km en tussen haltes tot 400 m (+1 min overstapmarge). Uitgevallen ritten worden overgeslagen.
+- Geeft ~5 opties: de snelste, en daarna telkens een iets latere vertrektijd. Per reisdeel: tijden, spoor/perron, aantal haltes, realtime (OVapi voor bus/tram/metro, NS voor treinen), meldingen en de lijn over de echte routelijn.
+- Na het opstarten ~1,7 s om de dienstregeling klaar te zetten; daarna 10–150 ms per zoekopdracht.
+- In de app: kies een optie → de reis op de kaart, de voertuigen van jouw reis groen omrand (de rest vervaagt), en per reisdeel live "bij je halte over 3 min" / "uitstappen over 8 min".
+
+### Vertrekbord per halte (`GET /api/stops/:id/departures`)
+Klik een halte op de kaart (vanaf zoom 14,5): vertrekken in de komende 1,5 uur met vertraging, uitval, "stopt hier niet" en spoor/perron. Een rit die live rijdt, kun je aanklikken om het voertuig te zien. Met de knoppen **Hierheen** en **Vanaf hier** plan je een reis.
+
+### Treinen realtime (`src/nsRealtime.ts`)
+Per station de NS-vertrektijden en -aankomsttijden (60 s gecachet): werkelijke tijd, spoorwijziging ("gewijzigd") en uitval, gekoppeld via het treinnummer. 396 van de 397 NS-stations zijn aan onze stations gekoppeld (op afstand).
+
+### Meldingen (`src/alerts.ts`)
+- OVapi-meldingen (bus/tram/metro, ~590), eens per 5 minuten binnen de rotatie van de poller. Een melding voor een hele halte die in de tekst alleen andere lijnen noemt ("Bus N86 stopt hier niet"), wordt niet aan jouw reisdeel gehangen.
+- NS-storingen (trein), eens per 5 minuten. Bij een reisdeel alleen als zowel het in- als het uitstapstation in de storing liggen.
+
+### Favorieten
+☆ bij een halte of een route; wordt in je browser bewaard (localStorage). Favoriete haltes staan bovenaan in Van/Naar, bewaarde routes als knop onder het paneel.

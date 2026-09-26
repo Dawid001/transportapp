@@ -7,7 +7,7 @@ import { MODE_COLORS, MODE_LABELS } from "@/lib/format";
 const PLACE_LABELS: Record<Place["type"], string> = { woonplaats: "Plaats", weg: "Straat", adres: "Adres", postcode: "Postcode" };
 const DEBOUNCE_MS = 200;
 
-type Result = { kind: "location" } | { kind: "stop"; stop: StopSummary } | { kind: "place"; place: Place };
+type Result = { kind: "location" } | { kind: "stop"; stop: StopSummary; fav?: boolean } | { kind: "place"; place: Place; fav?: boolean };
 
 type Props = {
   /** Korte naam voor het veld, bv. "Van" of "Naar". */
@@ -17,6 +17,8 @@ type Props = {
   initialText?: string;
   /** "Mijn locatie" als eerste keuze aanbieden. */
   offerMyLocation?: boolean;
+  /** Favoriete haltes en plaatsen, getoond zolang er nog niets getypt is. */
+  favorites?: ({ kind: "stop"; stop: StopSummary } | { kind: "place"; place: Place })[];
   /** Rond dit punt zoeken (bv. het midden van de kaart), zodat haltes in de buurt hoger staan. */
   near?: () => { lat: number; lng: number } | undefined;
   onSelectStop: (stop: StopSummary) => void;
@@ -25,7 +27,7 @@ type Props = {
   onClear?: () => void;
 };
 
-export function SearchBox({ label, placeholder, initialText = "", offerMyLocation, near, onSelectStop, onSelectPlace, onSelectMyLocation, onClear }: Props) {
+export function SearchBox({ label, placeholder, initialText = "", offerMyLocation, favorites, near, onSelectStop, onSelectPlace, onSelectMyLocation, onClear }: Props) {
   const [query, setQuery] = useState(initialText);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [open, setOpen] = useState(false);
@@ -72,6 +74,7 @@ export function SearchBox({ label, placeholder, initialText = "", offerMyLocatio
   const typed = query.trim().length >= 2 && query !== chosen;
   const items: Result[] = [
     ...(offerMyLocation && !typed ? [{ kind: "location" as const }] : []),
+    ...(!typed ? (favorites ?? []).map((f) => ({ ...f, fav: true })) : []),
     ...(typed && results
       ? [...results.stops.map((stop) => ({ kind: "stop" as const, stop })), ...results.places.map((place) => ({ kind: "place" as const, place }))]
       : []),
@@ -160,9 +163,18 @@ export function SearchBox({ label, placeholder, initialText = "", offerMyLocatio
           className="absolute inset-x-0 top-full z-20 mt-1 max-h-[55dvh] overflow-y-auto rounded-2xl bg-white py-1.5 shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
         >
           {items.map((item, i) => {
-            const prevKind = items[i - 1]?.kind;
-            const heading =
-              item.kind === "stop" && prevKind !== "stop" ? "Haltes" : item.kind === "place" && prevKind !== "place" ? "Plaatsen" : null;
+            const prev = items[i - 1];
+            const isFav = item.kind !== "location" && !!item.fav;
+            const prevFav = !!prev && prev.kind !== "location" && !!prev.fav;
+            const heading = isFav
+              ? prevFav
+                ? null
+                : "Favorieten"
+              : item.kind === "stop" && prev?.kind !== "stop"
+                ? "Haltes"
+                : item.kind === "place" && prev?.kind !== "place"
+                  ? "Plaatsen"
+                  : null;
             return (
               <li key={item.kind === "location" ? "loc" : item.kind === "stop" ? `s-${item.stop.id}` : `p-${item.place.id}`} role="presentation">
                 {heading && <p className="px-4 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">{heading}</p>}

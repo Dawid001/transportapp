@@ -4,6 +4,7 @@ import { trainLabel } from "./ns.js";
 import type { StopGroup } from "./stopIndex.js";
 import { serviceDate, serviceDayStart } from "./time.js";
 import type { Timetable } from "./timetable.js";
+import type { TrainTime } from "./nsRealtime.js";
 import type { TripUpdateInfo } from "./tripUpdates.js";
 
 export type Departure = {
@@ -12,8 +13,10 @@ export type Departure = {
   headsign?: string;
   mode: Mode;
   agencyName?: string;
-  /** Spoor of perron (uit de dienstregeling). */
+  /** Spoor of perron (bij treinen het actuele spoor van NS). */
   platform?: string;
+  /** Het spoor is gewijzigd t.o.v. de planning. */
+  platformChanged?: boolean;
   /** Unix-seconden. */
   scheduled: number;
   expected?: number;
@@ -50,7 +53,11 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
    * Kijkt naar de dienstdagen van gisteren, vandaag en morgen, want ritten na middernacht horen
    * bij de dienstdag van gisteren (tijden ≥ 24:00).
    */
-  function forStop(group: StopGroup, fromSec: number, windowSec = 90 * 60, limit = 40): Departure[] {
+  function forStop(
+    group: StopGroup,
+    fromSec: number,
+    { windowSec = 90 * 60, limit = 40, trains }: { windowSec?: number; limit?: number; trains?: Map<string, TrainTime> } = {},
+  ): Departure[] {
     const live = liveTripIds();
     const out: Departure[] = [];
     const dates = [serviceDate(1), serviceDate(0), serviceDate(-1)];
@@ -100,6 +107,13 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
             if (shown < fromSec - 60 || shown > fromSec + windowSec) continue;
 
             const info = lookup(trip.tripId);
+            // Treinen: realtime van NS (op treinnummer, en alleen als het om dezelfde dag gaat).
+            const ns = info?.shortName ? trains?.get(info.shortName) : undefined;
+            const train = ns && Math.abs(ns.planned - scheduled) < 30 * 60 ? ns : undefined;
+            if (train) {
+              expected = train.actual;
+              delay = train.actual - train.planned;
+            }
             out.push({
               tripId: trip.tripId,
               // Treinen als op de kaart: IC, SPR, RS18 … i.p.v. "Intercity".
@@ -107,11 +121,12 @@ export function createDepartures({ db, timetable, lookup, tripUpdate, liveTripId
               headsign: info?.headsign,
               mode: info?.mode ?? pattern.mode,
               agencyName: info?.agencyName,
-              platform: platformOf(stopId),
+              platform: train?.actualTrack ?? platformOf(stopId),
+              platformChanged: train && train.actualTrack !== train.plannedTrack ? true : undefined,
               scheduled,
               expected,
               delay,
-              canceled: matchesDay && update?.canceled ? true : undefined,
+              canceled: (matchesDay && update?.canceled) || train?.cancelled ? true : undefined,
               skipped: u?.skipped ? true : undefined,
               live: live.has(trip.tripId) || undefined,
             });

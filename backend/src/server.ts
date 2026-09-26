@@ -7,8 +7,10 @@ import { openGtfs, type Mode } from "./gtfs/lookup.js";
 import { DATA_DIR } from "./gtfs/paths.js";
 import { createMotionEstimator } from "./motion.js";
 import { startNsPoller } from "./nsPoller.js";
+import { createAlerts } from "./alerts.js";
 import { createDepartures } from "./departures.js";
 import { trainLabel } from "./ns.js";
+import { createNsRealtime } from "./nsRealtime.js";
 import { createPlanner, type PlanPoint } from "./planner.js";
 import { searchPlaces } from "./places.js";
 import { createStopIndex, type StopGroup } from "./stopIndex.js";
@@ -142,6 +144,66 @@ function planPoint(params: URLSearchParams, prefix: "from" | "to"): PlanPoint | 
   return { name: params.get(`${prefix}Name`) || "Gekozen locatie", lat, lng };
 }
 
+// Meldingen: OVapi (bus/tram/metro, via de poller hieronder) en NS-storingen (trein, eigen timer).
+const alerts = createAlerts(ns ? nsKey : undefined);
+
+// Realtime treintijden (vertraging, spoor, uitval) via de NS Reisinformatie API.
+const nsRealtime = ns && nsKey ? createNsRealtime(nsKey, stopIndex) : null;
+
+/** NS-realtime van een station voor het vertrekbord (leeg als het geen station is of NS uit staat). */
+async function trainBoard(stopIds: string[], kind: "departures" | "arrivals") {
+  const code = nsRealtime && stopIds.map((id) => nsRealtime.stationCode(id)).find(Boolean);
+  return code ? nsRealtime[kind](code) : undefined;
+}
+
+/** Meldingen per reisdeel: op de in- en uitstaphalte, voor die lijn (en NS-storingen op die stations). */
+function addLegAlerts(journeys: ReturnType<typeof planner.plan>) {
+  for (const j of journeys) {
+    for (const leg of j.legs) {
+      if (leg.type !== "transit") continue;
+      const stopIds = [leg.from.stopId, leg.to.stopId].filter((x): x is string => !!x);
+      const routeId = gtfs.lookup(leg.tripId)?.routeId;
+      const stationCodes = leg.mode === "train" && nsRealtime ? stopIds.map((id) => nsRealtime.stationCode(id)).filter((c): c is string => !!c) : undefined;
+      const found = alerts.forStops(stopIds, {
+        routeIds: routeId ? new Set([routeId]) : undefined,
+        stationCodes,
+        line: leg.line,
+        allStations: true,
+      });
+      if (found.length) leg.alerts = found;
+    }
+  }
+}
+
+/** Treinstukken in reisadviezen aanvullen met NS-realtime: werkelijke tijden, spoor en uitval. */
+async function enrichTrainLegs(journeys: ReturnType<typeof planner.plan>) {
+  if (!nsRealtime) return;
+  await Promise.all(
+    journeys.flatMap((j) =>
+      j.legs.map(async (leg) => {
+        if (leg.type !== "transit" || leg.mode !== "train") return;
+        const nr = gtfs.lookup(leg.tripId)?.shortName;
+        if (!nr) return;
+        const [deps, arrs] = await Promise.all([
+          leg.from.stopId ? trainBoard([leg.from.stopId], "departures") : undefined,
+          leg.to.stopId ? trainBoard([leg.to.stopId], "arrivals") : undefined,
+        ]);
+        const d = deps?.get(nr);
+        if (d && Math.abs(d.planned - leg.departure) < 30 * 60) {
+          leg.expectedDeparture = d.actual;
+          if (d.actualTrack) leg.from.platform = d.actualTrack;
+          if (d.cancelled) leg.canceled = true;
+        }
+        const a = arrs?.get(nr);
+        if (a && Math.abs(a.planned - leg.arrival) < 30 * 60) {
+          leg.expectedArrival = a.actual;
+          if (a.actualTrack) leg.to.platform = a.actualTrack;
+        }
+      }),
+    ),
+  );
+}
+
 /** Halte zonder de lijst interne halte-ID's (die heeft de frontend niet nodig). */
 const publicStop = ({ stopIds: _ids, ...stop }: StopGroup) => stop;
 
@@ -224,8 +286,20 @@ async function poll(): Promise<number> {
 // verwachte tijden, zodat vertragingen na een herstart niet een minuut ontbreken.
 let pollTick = cache ? 1 : 0;
 async function pollLoop() {
-  const delay = await (pollTick++ % 2 === 0 ? poll() : pollTripUpdates());
+  // Eens per 5 minuten (1 op de 10 rondes) meldingen i.p.v. verwachte tijden: die veranderen weinig.
+  const tick = pollTick++;
+  const delay = await (tick % 10 === 3 ? pollAlerts() : tick % 2 === 0 ? poll() : pollTripUpdates());
   setTimeout(pollLoop, delay);
+}
+
+async function pollAlerts(): Promise<number> {
+  try {
+    console.log(`[${time()}] ${await alerts.pollOvapi()}`);
+  } catch (err) {
+    console.error(`[${time()}] Meldingen mislukt: ${err instanceof Error ? err.message : err}`);
+    if (err instanceof RateLimitError) return BACKOFF_AFTER_429_MS;
+  }
+  return POLL_INTERVAL_MS;
 }
 
 /** bbox=minLng,minLat,maxLng,maxLat (zelfde volgorde als MapLibre's getBounds().toArray().flat()) */
@@ -359,7 +433,10 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!from || !to) return sendJson(res, 400, { error: "Van en naar zijn verplicht (halte of coördinaten)" });
     const time = Number(url.searchParams.get("time"));
     const at = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
-    return sendJson(res, 200, { from, to, time: at, journeys: planner.plan(from, to, at, 5) });
+    const journeys = planner.plan(from, to, at, 5);
+    await enrichTrainLegs(journeys);
+    addLegAlerts(journeys);
+    return sendJson(res, 200, { from, to, time: at, journeys });
   }
 
   if (url.pathname === "/api/stops") {
@@ -375,11 +452,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!stopMatch[2]) return sendJson(res, 200, publicStop(stop), 3600);
     const time = Number(url.searchParams.get("time"));
     const from = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
+    const list = departures.forStop(stop, from, { trains: stop.modes.includes("train") ? await trainBoard(stop.stopIds, "departures") : undefined });
+    // Meldingen voor deze halte, alleen voor lijnen die hier (binnenkort) vertrekken of zonder lijn.
+    const routeIds = new Set(list.map((d) => gtfs.lookup(d.tripId)?.routeId).filter((r): r is string => !!r));
+    const stationCodes = nsRealtime ? stop.stopIds.map((id) => nsRealtime.stationCode(id)).filter((c): c is string => !!c) : undefined;
     return sendJson(res, 200, {
       stop: publicStop(stop),
       from,
       updatedAt: tripUpdates?.updatedAt ?? null,
-      departures: departures.forStop(stop, from),
+      alerts: alerts.forStops(stop.stopIds, { routeIds, stationCodes: stationCodes?.slice(0, 1) }),
+      departures: list,
     });
   }
 

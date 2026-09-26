@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { ApiVehicle, Departure, Journey, Mode, PlanEndpoint, PlanResponse, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
 import { boundsOf, tripRouteGeo } from "@/lib/routeGeo";
 import { endpointCoords, endpointParams, journeyGeo, journeyPoints } from "@/lib/journeyGeo";
+import { toSaved, useFavorites, type Favorite, type SavedEndpoint } from "@/lib/favorites";
 import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
 import { JourneySheet } from "./JourneySheet";
@@ -621,6 +622,23 @@ export function LiveMap() {
     setSelectedJourney(null);
   }, [from, to]);
 
+  const { has: isFavorite, toggle: toggleFavorite } = useFavorites();
+  const routeFavorite: Favorite | null = from && to ? { kind: "route", from: toSaved(from), to: toSaved(to) } : null;
+
+  const applyRoute = useCallback(
+    (route: Extract<Favorite, { kind: "route" }>) => {
+      const apply = (ep: SavedEndpoint, target: "from" | "to") => {
+        if (ep.kind === "location") requestMyLocation(target);
+        else if (target === "from") setFrom(ep);
+        else setTo(ep);
+      };
+      apply(route.from, "from");
+      apply(route.to, "to");
+      setSelectedJourney(null);
+    },
+    [requestMyLocation],
+  );
+
   const closePlan = useCallback(() => {
     setTo(null);
     setPlan(null);
@@ -767,6 +785,7 @@ export function LiveMap() {
           onUseMyLocation={requestMyLocation}
           onSwap={swap}
           onTime={setPlanTime}
+          onUseRoute={applyRoute}
         />
         <StatusPill status={status} visibleCount={visibleCount} />
         <Legend counts={modeCounts} />
@@ -782,6 +801,8 @@ export function LiveMap() {
           onSelect={setSelectedJourney}
           onShowVehicle={showVehicle}
           onClose={closePlan}
+          routeSaved={!!routeFavorite && isFavorite(routeFavorite)}
+          onToggleRoute={() => routeFavorite && toggleFavorite(routeFavorite)}
         />
       )}
 

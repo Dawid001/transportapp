@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import type { Departure, DeparturesResponse, StopSummary } from "@/lib/types";
+import { AlertList } from "./AlertList";
+import { useFavorites } from "@/lib/favorites";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
 // De backend ververst verwachte tijden eens per minuut.
@@ -50,6 +52,8 @@ export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: P
   }, [stop.id]);
 
   const departures = data?.stop.id === stop.id ? data.departures : null;
+  const { has, toggle } = useFavorites();
+  const isFav = has({ kind: "stop", stop });
 
   return (
     <div className="absolute inset-x-0 bottom-0 p-3 pb-9 sm:left-3 sm:right-auto sm:w-96 sm:pb-3">
@@ -64,6 +68,14 @@ export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: P
             </p>
             <h2 className="truncate text-lg font-semibold leading-tight">{stop.name}</h2>
           </div>
+          <button
+            onClick={() => toggle({ kind: "stop", stop })}
+            aria-label={isFav ? "Verwijder uit favorieten" : "Bewaar als favoriet"}
+            aria-pressed={isFav}
+            className={`-mt-1 rounded-full p-1.5 text-lg leading-none hover:bg-neutral-100 dark:hover:bg-neutral-800 ${isFav ? "text-amber-500" : "text-neutral-400"}`}
+          >
+            {isFav ? "★" : "☆"}
+          </button>
           <button
             onClick={onClose}
             aria-label="Sluiten"
@@ -84,6 +96,11 @@ export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: P
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+          {data?.stop.id === stop.id && data.alerts.length > 0 && (
+            <div className="px-2 pb-2">
+              <AlertList alerts={data.alerts} />
+            </div>
+          )}
           {!departures && !error && <p className="px-2 py-3 text-sm text-neutral-500">Vertrektijden laden…</p>}
           {error && !departures && <p className="px-2 py-3 text-sm text-red-600">Vertrektijden konden niet worden geladen.</p>}
           {departures && departures.length === 0 && (
@@ -108,7 +125,7 @@ function DepartureRow({ departure: d, now, onShow }: { departure: Departure; now
   const gone = d.canceled || d.skipped;
   const tone = delayTone(d.delay);
   const delayed = delayMinutes(d.delay) !== 0;
-  const platformLabel = d.platform ? `${d.mode === "train" ? "Spoor" : "Perron"} ${d.platform}` : undefined;
+  const platformLabel = d.platform ? `${d.mode === "train" ? "Spoor" : "Perron"} ${d.platform}${d.platformChanged ? " (gewijzigd)" : ""}` : undefined;
 
   const content = (
     <>

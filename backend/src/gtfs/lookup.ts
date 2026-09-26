@@ -16,6 +16,9 @@ export type TripInfo = {
   routeTextColor?: string;
   directionId?: number;
   shapeId?: string;
+  /** Ritnummer; bij treinen het treinnummer (koppeling met NS-realtime). */
+  shortName?: string;
+  routeId?: string;
 };
 
 export type LngLat = [number, number];
@@ -106,7 +109,7 @@ export function openGtfs() {
 
   const byTrip = db.prepare(`
     SELECT r.route_short_name, r.route_type, r.route_color, r.route_text_color, a.agency_name,
-           t.trip_headsign, t.direction_id, t.shape_id
+           t.trip_headsign, t.direction_id, t.shape_id, t.trip_short_name, t.route_id
     FROM trips t
     JOIN routes r ON r.route_id = t.route_id
     LEFT JOIN agency a ON a.agency_id = r.agency_id
@@ -131,6 +134,8 @@ export function openGtfs() {
       routeTextColor: str(row.route_text_color),
       directionId: row.direction_id == null ? undefined : Number(row.direction_id),
       shapeId: str(row.shape_id),
+      shortName: str(row.trip_short_name),
+      routeId: str(row.route_id),
     };
   }
 

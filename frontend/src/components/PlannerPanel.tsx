@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { PlanEndpoint } from "@/lib/types";
+import { savedName, useFavorites, type Favorite } from "@/lib/favorites";
 import { SearchBox } from "./SearchBox";
 
 export function endpointName(ep: PlanEndpoint | null): string {
@@ -31,11 +32,16 @@ type Props = {
   onUseMyLocation: (target: "from" | "to") => void;
   onSwap: () => void;
   onTime: (time: number | null) => void;
+  /** Bewaarde route kiezen. */
+  onUseRoute: (route: Extract<Favorite, { kind: "route" }>) => void;
 };
 
 /** Bovenin: van waar naar waar, en wanneer. */
-export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo, onUseMyLocation, onSwap, onTime }: Props) {
+export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo, onUseMyLocation, onSwap, onTime, onUseRoute }: Props) {
   const [later, setLater] = useState(time !== null);
+  const { favorites } = useFavorites();
+  const endpointFavs = favorites.filter((f): f is Extract<Favorite, { kind: "stop" | "place" }> => f.kind !== "route");
+  const routes = favorites.filter((f): f is Extract<Favorite, { kind: "route" }> => f.kind === "route");
 
   return (
     <div className="pointer-events-auto rounded-2xl bg-white/95 shadow-lg ring-1 ring-black/5 backdrop-blur dark:bg-neutral-900/95 dark:ring-white/10">
@@ -46,6 +52,7 @@ export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo
           placeholder="Vertrekpunt"
           initialText={endpointName(from)}
           offerMyLocation
+          favorites={endpointFavs}
           near={near}
           onSelectStop={(stop) => onFrom({ kind: "stop", stop })}
           onSelectPlace={(place) => onFrom({ kind: "place", place })}
@@ -59,6 +66,7 @@ export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo
           placeholder="Waar wil je heen?"
           initialText={endpointName(to)}
           offerMyLocation
+          favorites={endpointFavs}
           near={near}
           onSelectStop={(stop) => onTo({ kind: "stop", stop })}
           onSelectPlace={(place) => onTo({ kind: "place", place })}
@@ -111,6 +119,20 @@ export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo
         )}
       </div>
       {locationError && <p className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{locationError}</p>}
+      {!to && routes.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-t border-neutral-200 px-3 py-2 dark:border-neutral-700">
+          {routes.map((r) => (
+            <button
+              key={`${savedName(r.from)}>${savedName(r.to)}`}
+              type="button"
+              onClick={() => onUseRoute(r)}
+              className="max-w-full truncate rounded-full bg-neutral-100 px-2.5 py-1 text-xs hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+            >
+              ★ {savedName(r.from)} → {savedName(r.to)}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

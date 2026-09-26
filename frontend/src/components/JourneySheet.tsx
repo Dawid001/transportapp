@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ApiVehicle, Journey, Leg, TransitLeg } from "@/lib/types";
+import { AlertList } from "./AlertList";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
 type Props = {
@@ -14,6 +15,9 @@ type Props = {
   onSelect: (index: number | null) => void;
   onShowVehicle: (vehicle: ApiVehicle) => void;
   onClose: () => void;
+  /** Route (van → naar) als favoriet. */
+  routeSaved: boolean;
+  onToggleRoute: () => void;
 };
 
 const minutes = (seconds: number) => Math.max(1, Math.round(seconds / 60));
@@ -28,7 +32,7 @@ function expectedDeparture(leg: TransitLeg, vehicle?: ApiVehicle): number {
 }
 
 /** Onderin: reisopties, en na het kiezen de reis stap voor stap met live status. */
-export function JourneySheet({ journeys, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose }: Props) {
+export function JourneySheet({ journeys, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
@@ -49,6 +53,13 @@ export function JourneySheet({ journeys, loading, error, selected, vehicles, onS
             <h2 className="text-sm font-semibold">Reisopties</h2>
           )}
           <span className="flex-1" />
+          <button
+            onClick={onToggleRoute}
+            aria-pressed={routeSaved}
+            className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 ${routeSaved ? "text-amber-500" : "text-neutral-500"}`}
+          >
+            {routeSaved ? "★ Bewaard" : "☆ Bewaar route"}
+          </button>
           <button
             onClick={onClose}
             aria-label="Sluiten"
@@ -90,6 +101,7 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
   const leaveIn = Math.round((j.departure - now / 1000) / 60);
   const delay = firstTransit ? (firstTransit.expectedDeparture ? firstTransit.expectedDeparture - firstTransit.departure : vehicle?.delay) : undefined;
   const canceled = j.legs.some((l) => l.type === "transit" && l.canceled);
+  const alertCount = j.legs.reduce((n, l) => n + (l.type === "transit" ? (l.alerts?.length ?? 0) : 0), 0);
 
   return (
     <button onClick={onClick} className="w-full rounded-xl px-3 py-2.5 text-left ring-1 ring-neutral-200 hover:bg-neutral-50 dark:ring-neutral-700 dark:hover:bg-neutral-800">
@@ -114,6 +126,7 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
             {leaveIn <= 0 ? "Vertrek nu" : leaveIn < 60 ? `Vertrek over ${leaveIn} min` : `Vertrek om ${formatClock(j.departure)}`}
             {vehicle && <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">● live</span>}
             {delayMinutes(delay) !== 0 && <span className={`ml-1.5 ${DELAY_TONE_CLASSES[delayTone(delay)]}`}>{formatDelay(delay)} min</span>}
+            {alertCount > 0 && <span className="ml-1.5 text-amber-600 dark:text-amber-400">⚠ {alertCount === 1 ? "melding" : `${alertCount} meldingen`}</span>}
           </>
         )}
       </p>
@@ -188,6 +201,12 @@ function TransitStep({ leg, vehicle, now, onShowVehicle }: { leg: TransitLeg; ve
           {leg.agencyName ? ` · ${leg.agencyName}` : ""} · {leg.stopsBetween + 1} {leg.stopsBetween === 0 ? "halte" : "haltes"} ·{" "}
           {minutes(leg.arrival - leg.departure)} min
         </p>
+
+        {leg.alerts && leg.alerts.length > 0 && (
+          <div className="mt-1.5">
+            <AlertList alerts={leg.alerts} compact />
+          </div>
+        )}
 
         {/* Live: waar is het voertuig nu? */}
         <div className={`mt-1.5 rounded-lg px-2 py-1.5 text-xs ${status.tone === "bad" ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300" : status.live ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"}`}>

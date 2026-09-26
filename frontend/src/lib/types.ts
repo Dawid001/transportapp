@@ -87,6 +87,8 @@ export type Departure = {
   mode: Mode;
   agencyName?: string;
   platform?: string;
+  /** Het spoor is gewijzigd t.o.v. de planning. */
+  platformChanged?: boolean;
   /** Unix-seconden. */
   scheduled: number;
   expected?: number;
@@ -96,8 +98,11 @@ export type Departure = {
   live?: boolean;
 };
 
+/** Melding: omleiding, tijdelijke halte, werkzaamheden of storing. */
+export type Alert = { id: string; source: "ov" | "ns"; title: string; text?: string };
+
 /** GET /api/stops/:id/departures */
-export type DeparturesResponse = { stop: StopSummary; from: number; updatedAt: number | null; departures: Departure[] };
+export type DeparturesResponse = { stop: StopSummary; from: number; updatedAt: number | null; alerts: Alert[]; departures: Departure[] };
 
 /** Begin- of eindpunt in de planner: een halte, een plaats/adres of je eigen locatie. */
 export type PlanEndpoint =
@@ -127,6 +132,7 @@ export type TransitLeg = {
   fromSequence: number;
   toSequence: number;
   path: [number, number][];
+  alerts?: Alert[];
 };
 
 export type Leg = WalkLeg | TransitLeg;
