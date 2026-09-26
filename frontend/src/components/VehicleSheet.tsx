@@ -1,9 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ApiVehicle, RouteStop, TripRoute } from "@/lib/types";
+import type { ApiVehicle, RouteStop, StopTime, TripRoute, TripStopTimes } from "@/lib/types";
 import { upcomingStops } from "@/lib/routeGeo";
-import { MODE_COLORS, MODE_LABELS, STATUS_LABELS, formatAgo } from "@/lib/format";
+import { displayTime, useTripTimes } from "@/lib/useTripTimes";
+import {
+  DELAY_TONE_CLASSES,
+  MODE_COLORS,
+  MODE_LABELS,
+  STATUS_LABELS,
+  delayMinutes,
+  delayTone,
+  formatAgo,
+  formatClock,
+  formatDelay,
+} from "@/lib/format";
 
 type Props = {
   vehicle: ApiVehicle;
@@ -21,6 +32,7 @@ export function VehicleSheet({ vehicle, route, follow, onToggleFollow, onClose, 
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  const times = useTripTimes(vehicle.tripId);
 
   const age = vehicle.timestamp ? now / 1000 - vehicle.timestamp : undefined;
   const color = MODE_COLORS[vehicle.mode];
@@ -30,7 +42,7 @@ export function VehicleSheet({ vehicle, route, follow, onToggleFollow, onClose, 
     <div className="absolute inset-x-0 bottom-0 p-3 pb-9 sm:left-3 sm:right-auto sm:w-96 sm:pb-3">
       <section
         aria-label="Voertuiggegevens"
-        className="rounded-2xl bg-white p-4 shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
+        className="max-h-[70dvh] overflow-y-auto rounded-2xl bg-white p-4 shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
       >
         <div className="flex items-start gap-3">
           <div
@@ -46,6 +58,7 @@ export function VehicleSheet({ vehicle, route, follow, onToggleFollow, onClose, 
             <h2 className="truncate text-lg font-semibold leading-tight">
               {vehicle.headsign ? `→ ${vehicle.headsign}` : "Bestemming onbekend"}
             </h2>
+            <Punctuality delay={vehicle.delay} canceled={times?.canceled} />
           </div>
           <button
             onClick={onClose}
@@ -84,7 +97,9 @@ export function VehicleSheet({ vehicle, route, follow, onToggleFollow, onClose, 
             voertuig verspringt daarom alleen bij nieuwe posities.
           </p>
         )}
-        {route && route.stops.length > 0 && <NextStops vehicle={vehicle} route={route} color={color} onStopClick={onStopClick} />}
+        {route && route.stops.length > 0 && (
+          <NextStops vehicle={vehicle} route={route} times={times} color={color} now={now} onStopClick={onStopClick} />
+        )}
 
         <button
           onClick={onToggleFollow}
@@ -101,13 +116,48 @@ export function VehicleSheet({ vehicle, route, follow, onToggleFollow, onClose, 
   );
 }
 
+/** "🟢 Op tijd", "🟠 +3 min", "🔴 +12 min", "Rijdt 2 min te vroeg" of "Uitgevallen". */
+function Punctuality({ delay, canceled }: { delay?: number; canceled?: boolean }) {
+  if (canceled) {
+    return <p className="mt-0.5 text-sm font-medium text-red-600 dark:text-red-400">Rit uitgevallen</p>;
+  }
+  if (delay === undefined) return null;
+  const min = delayMinutes(delay);
+  const tone = delayTone(delay);
+  const dot = { ok: "bg-emerald-500", late: "bg-amber-500", veryLate: "bg-red-500" }[tone];
+  const text = min > 0 ? `+${min} min vertraging` : min < 0 ? `Rijdt ${-min} min te vroeg` : "Op tijd";
+  return (
+    <p className={`mt-0.5 flex items-center gap-1.5 text-sm font-medium ${DELAY_TONE_CLASSES[tone]}`}>
+      <span className={`size-2 rounded-full ${dot}`} aria-hidden />
+      {text}
+    </p>
+  );
+}
+
 const COLLAPSED_STOPS = 4;
 
-function NextStops({ vehicle, route, color, onStopClick }: { vehicle: ApiVehicle; route: TripRoute; color: string; onStopClick: (stop: RouteStop) => void }) {
+function NextStops({
+  vehicle,
+  route,
+  times,
+  color,
+  now,
+  onStopClick,
+}: {
+  vehicle: ApiVehicle;
+  route: TripRoute;
+  times: TripStopTimes | null;
+  color: string;
+  now: number;
+  onStopClick: (stop: RouteStop) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const upcoming = upcomingStops(route, vehicle);
   const shown = expanded ? upcoming : upcoming.slice(0, COLLAPSED_STOPS);
   const atStop = vehicle.status === "STOPPED_AT";
+  const timeBySeq = new Map<number, StopTime>(times?.stops.map((t) => [t.sequence, t]));
+  // De eerste halte waar de rit echt langskomt is "volgende halte" (overgeslagen haltes tellen niet).
+  const nextSeq = upcoming.find((s) => !timeBySeq.get(s.sequence)?.skipped)?.sequence;
 
   if (upcoming.length === 0) {
     return <p className="mt-4 text-sm text-neutral-500">Eindhalte bereikt</p>;
@@ -115,11 +165,17 @@ function NextStops({ vehicle, route, color, onStopClick }: { vehicle: ApiVehicle
 
   return (
     <div className="mt-4">
-      <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-500">Volgende haltes</h3>
-      <ol className={expanded ? "max-h-56 overflow-y-auto pr-1" : undefined}>
+      <div className="mb-1 flex items-baseline justify-between">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-500">Volgende haltes</h3>
+        {times && !times.realtime && <span className="text-xs text-neutral-400">geplande tijden</span>}
+      </div>
+      <ol className={expanded ? "max-h-64 overflow-y-auto pr-1" : undefined}>
         {shown.map((stop, i) => {
           const isFirst = i === 0;
           const isLast = stop === upcoming[upcoming.length - 1];
+          const isNext = stop.sequence === nextSeq;
+          const t = timeBySeq.get(stop.sequence);
+          const skipped = !!t?.skipped;
           return (
             <li key={`${stop.sequence}-${stop.id}`} className="relative flex">
               {/* Tijdlijn: verticale lijn met een bolletje per halte */}
@@ -128,15 +184,27 @@ function NextStops({ vehicle, route, color, onStopClick }: { vehicle: ApiVehicle
                 {!isFirst && <span className="absolute top-0 h-3 w-0.5" style={{ backgroundColor: color, opacity: 0.35 }} />}
                 <span
                   className="relative mt-1.5 size-3 rounded-full border-2 bg-white dark:bg-neutral-900"
-                  style={{ borderColor: color, backgroundColor: isFirst ? color : undefined }}
+                  style={{
+                    borderColor: skipped ? "#9ca3af" : color,
+                    backgroundColor: isNext ? color : undefined,
+                  }}
                 />
               </span>
               <button
                 onClick={() => onStopClick(stop)}
-                className="-my-0.5 ml-1 min-w-0 flex-1 rounded-md px-1.5 py-1 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                className="-my-0.5 ml-1 flex min-w-0 flex-1 items-start gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
               >
-                <span className={`block truncate ${isFirst ? "font-semibold" : ""}`}>{stop.name}</span>
-                {isFirst && <span className="block text-xs text-neutral-500">{atStop ? "Staat nu hier" : "Volgende halte"}</span>}
+                <span className="min-w-0 flex-1">
+                  <span className={`block truncate ${isNext ? "font-semibold" : ""} ${skipped ? "text-neutral-400 line-through" : ""}`}>
+                    {stop.name}
+                  </span>
+                  {skipped ? (
+                    <span className="block text-xs text-red-600 dark:text-red-400">Rijdt niet via deze halte</span>
+                  ) : (
+                    isNext && <span className="block text-xs text-neutral-500">{atStop ? "Staat nu hier" : "Volgende halte"}</span>
+                  )}
+                </span>
+                {t && !skipped && <StopClock time={t} now={now} showCountdown={isNext} />}
               </button>
             </li>
           );
@@ -148,5 +216,30 @@ function NextStops({ vehicle, route, color, onStopClick }: { vehicle: ApiVehicle
         </button>
       )}
     </div>
+  );
+}
+
+/** Rechts in de haltelijst: verwachte tijd, eventueel doorgestreepte geplande tijd en vertraging. */
+function StopClock({ time, now, showCountdown }: { time: StopTime; now: number; showCountdown: boolean }) {
+  const { time: shown, scheduled } = displayTime(time);
+  if (shown === undefined) return null;
+  const min = delayMinutes(time.delay);
+  const tone = delayTone(time.delay);
+  const minutesAway = Math.round((shown - now / 1000) / 60);
+
+  return (
+    <span className="shrink-0 text-right tabular-nums">
+      <span className="block">
+        {min !== 0 && scheduled !== undefined && (
+          <span className="mr-1 text-xs text-neutral-400 line-through">{formatClock(scheduled)}</span>
+        )}
+        <span className={min !== 0 ? `font-medium ${DELAY_TONE_CLASSES[tone]}` : undefined}>{formatClock(shown)}</span>
+      </span>
+      {showCountdown ? (
+        <span className="block text-xs text-neutral-500">{minutesAway <= 0 ? "nu" : `over ${minutesAway} min`}</span>
+      ) : (
+        min !== 0 && <span className={`block text-xs ${DELAY_TONE_CLASSES[tone]}`}>{formatDelay(time.delay)} min</span>
+      )}
+    </span>
   );
 }

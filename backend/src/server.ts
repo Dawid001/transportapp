@@ -7,6 +7,8 @@ import { openGtfs, type Mode } from "./gtfs/lookup.js";
 import { DATA_DIR } from "./gtfs/paths.js";
 import { createMotionEstimator } from "./motion.js";
 import { startNsPoller } from "./nsPoller.js";
+import { tripStopTimes, vehicleDelay } from "./stopTimes.js";
+import { fetchTripUpdates, type TripUpdateInfo } from "./tripUpdates.js";
 
 // Geheime instellingen (NS_API_KEY) uit backend/.env.
 try {
@@ -17,7 +19,8 @@ try {
 
 const PORT = Number(process.env.PORT) || 3001;
 // OVapi staat ~2 requests per minuut toe (daarboven 429). Eén poller voor alle gebruikers samen,
-// met ETag zodat een ongewijzigde feed alleen een lichte 304 kost.
+// met ETag zodat een ongewijzigde feed alleen een lichte 304 kost. Om de 30 s wisselen we af tussen
+// posities en verwachte tijden, dus elk één keer per minuut (OVapi ververst posities ook ~1× per minuut).
 const POLL_INTERVAL_MS = 30_000;
 const BACKOFF_AFTER_429_MS = 60_000;
 
@@ -45,6 +48,8 @@ export type ApiVehicle = {
   speed?: number;
   /** Route vóór het voertuig tot de volgende halte, beginnend op de positie van `timestamp`. */
   path?: [number, number][];
+  /** Vertraging in seconden bij de huidige/volgende halte (uit tripUpdates; negatief = te vroeg). */
+  delay?: number;
 };
 
 const gtfs = openGtfs();
@@ -73,6 +78,25 @@ function loadCacheFromDisk(): Cache | null {
 let cache: Cache | null = loadCacheFromDisk();
 let etag: string | undefined = cache?.etag;
 let lastError: string | null = null;
+
+let tripUpdates: { updatedAt: number; etag?: string; updates: Map<string, TripUpdateInfo> } | null = null;
+
+async function pollTripUpdates(): Promise<number> {
+  try {
+    const result = await fetchTripUpdates(tripUpdates?.etag);
+    if (!result) {
+      console.log(`[${time()}] Verwachte tijden ongewijzigd (304)`);
+      return POLL_INTERVAL_MS;
+    }
+    tripUpdates = { updatedAt: Date.now(), etag: result.etag, updates: result.updates };
+    console.log(`[${time()}] Verwachte tijden voor ${result.updates.size} ritten`);
+    return POLL_INTERVAL_MS;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${time()}] Verwachte tijden mislukt: ${message}`);
+    return err instanceof RateLimitError ? BACKOFF_AFTER_429_MS : POLL_INTERVAL_MS;
+  }
+}
 
 const time = () => new Date().toLocaleTimeString("nl-NL");
 
@@ -132,8 +156,11 @@ async function poll(): Promise<number> {
   }
 }
 
+// Om en om: posities, verwachte tijden, posities, … Met posities uit de cache beginnen we met de
+// verwachte tijden, zodat vertragingen na een herstart niet een minuut ontbreken.
+let pollTick = cache ? 1 : 0;
 async function pollLoop() {
-  const delay = await poll();
+  const delay = await (pollTick++ % 2 === 0 ? poll() : pollTripUpdates());
   setTimeout(pollLoop, delay);
 }
 
@@ -190,7 +217,13 @@ const server = createServer((req, res) => {
     if (line) vehicles = vehicles.filter((v) => v.line?.toLowerCase() === line.toLowerCase());
     if (mode) vehicles = vehicles.filter((v) => v.mode === mode);
     // Paden alleen op verzoek: op landelijk zoomniveau zie je de beweging niet en scheelt het veel data.
-    if (url.searchParams.get("paths") !== "1") vehicles = vehicles.map(({ path: _path, ...v }) => v);
+    const withPaths = url.searchParams.get("paths") === "1";
+    const updates = tripUpdates?.updates;
+    vehicles = vehicles.map(({ path, ...v }) => ({
+      ...v,
+      ...(withPaths && path ? { path } : {}),
+      delay: v.tripId ? vehicleDelay(updates?.get(v.tripId), v.currentStopSequence, v.status) : undefined,
+    }));
 
     return sendJson(res, 200, {
       // Nieuwste van beide bronnen, zodat de frontend ook NS-updates oppikt als OVapi niet veranderde.
@@ -200,6 +233,18 @@ const server = createServer((req, res) => {
       feedTimestamp: cache.feedTimestamp,
       count: vehicles.length,
       vehicles,
+    });
+  }
+
+  // Geplande + verwachte tijden per halte; verandert elke minuut, dus niet cachen.
+  const timesMatch = url.pathname.match(/^\/api\/trips\/([^/]+)\/times$/);
+  if (timesMatch) {
+    const tripId = decodeURIComponent(timesMatch[1]);
+    const route = gtfs.tripRoute(tripId);
+    if (!route) return sendJson(res, 404, { error: "Rit niet gevonden in de dienstregeling" });
+    return sendJson(res, 200, {
+      ...tripStopTimes(route, tripUpdates?.updates.get(tripId), Date.now() / 1000),
+      updatedAt: tripUpdates?.updatedAt ?? null,
     });
   }
 
@@ -218,7 +263,7 @@ const server = createServer((req, res) => {
 
   sendJson(res, 404, {
     error: "Niet gevonden",
-    endpoints: ["/api/vehicles", "/api/trips/:tripId", "/api/lines/:line", "/api/health"],
+    endpoints: ["/api/vehicles", "/api/trips/:tripId", "/api/trips/:tripId/times", "/api/lines/:line", "/api/health"],
   });
 });
 

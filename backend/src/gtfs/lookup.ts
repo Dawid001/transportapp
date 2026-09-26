@@ -19,7 +19,8 @@ export type TripInfo = {
 };
 
 export type LngLat = [number, number];
-export type RouteStop = { sequence: number; id: string; name: string; lat: number; lng: number };
+/** `arrival`/`departure`: geplande tijd in seconden sinds het begin van de dienstdag (kan ≥ 24 uur zijn). */
+export type RouteStop = { sequence: number; id: string; name: string; lat: number; lng: number; arrival?: number; departure?: number };
 /** `approximate`: de lijn volgt niet de echte weg (rechte stukken tussen haltes), zie isCoarse(). */
 export type TripRoute = { tripId: string; shape: LngLat[] | null; approximate: boolean; stops: RouteStop[] };
 export type LineVariant = {
@@ -155,7 +156,17 @@ export function openGtfs() {
 
   const shapeById = prepareIf("SELECT coords FROM shapes WHERE shape_id = ?");
   const tripById = db.prepare("SELECT shape_id FROM trips WHERE trip_id = ?");
-  const patternByTrip = prepareIf("SELECT p.stops FROM trip_patterns tp JOIN patterns p USING (pattern_id) WHERE tp.trip_id = ?");
+  // Geplande tijden zitten sinds de import met tijdprofielen in de database; oudere databases hebben ze niet.
+  const hasTimes = !!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'time_profiles'").get();
+  if (hasRouteTables && !hasTimes) console.warn("Database heeft nog geen geplande tijden. Draai: npm run gtfs:update -- --force");
+  const patternByTrip = prepareIf(
+    hasTimes
+      ? `SELECT p.stops, tp.start_sec, tpr.offsets FROM trip_patterns tp
+         JOIN patterns p USING (pattern_id)
+         LEFT JOIN time_profiles tpr ON tpr.profile_id = tp.profile_id
+         WHERE tp.trip_id = ?`
+      : "SELECT p.stops FROM trip_patterns tp JOIN patterns p USING (pattern_id) WHERE tp.trip_id = ?",
+  );
   const stopById = db.prepare("SELECT stop_id, stop_name, stop_lat, stop_lon FROM stops WHERE stop_id = ?");
   // Per route + richting de shape die door de meeste ritten gereden wordt (= het "normale" traject).
   const shapesByLine = db.prepare(`
@@ -186,13 +197,23 @@ export function openGtfs() {
     const trip = tripById.get(tripId) as { shape_id: string | null } | undefined;
     if (!trip) return null;
 
-    const patternRow = patternByTrip!.get(tripId) as { stops: string } | undefined;
+    const patternRow = patternByTrip!.get(tripId) as { stops: string; start_sec?: number | null; offsets?: string | null } | undefined;
     const pattern: [number, string][] = patternRow ? JSON.parse(patternRow.stops) : [];
+    // Per halte een offset (aankomst = vertrek) of [aankomst, vertrek], in seconden na start_sec.
+    const offsets: (number | [number, number])[] | null = patternRow?.offsets ? JSON.parse(patternRow.offsets) : null;
+    const start = patternRow?.start_sec ?? null;
     const stops: RouteStop[] = [];
-    for (const [sequence, stopId] of pattern) {
+    pattern.forEach(([sequence, stopId], i) => {
       const s = stopById.get(stopId) as Row | undefined;
-      if (s) stops.push({ sequence, id: stopId, name: String(s.stop_name), lat: Number(s.stop_lat), lng: Number(s.stop_lon) });
-    }
+      if (!s) return;
+      const stop: RouteStop = { sequence, id: stopId, name: String(s.stop_name), lat: Number(s.stop_lat), lng: Number(s.stop_lon) };
+      const off = offsets?.[i];
+      if (start !== null && off !== undefined) {
+        stop.arrival = start + (Array.isArray(off) ? off[0] : off);
+        stop.departure = start + (Array.isArray(off) ? off[1] : off);
+      }
+      stops.push(stop);
+    });
 
     // Zonder shape tekenen we rechte lijnen tussen de haltes.
     const decoded = decodeShape(trip.shape_id);

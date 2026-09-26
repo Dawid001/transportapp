@@ -78,11 +78,3 @@ export function trainLabel(routeShortName: string | undefined, apiType: string):
   }
   return apiType;
 }
-
-/** Datum als YYYYMMDD in Nederlandse tijd, `daysBack` dagen geleden. */
-export function serviceDate(daysBack = 0): string {
-  const d = new Date(Date.now() - daysBack * 86_400_000);
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam", year: "numeric", month: "2-digit", day: "2-digit" })
-    .format(d)
-    .replaceAll("-", "");
-}

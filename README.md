@@ -140,3 +140,21 @@ Zonder key draait de rest gewoon; de NS-treinen staan dan uit.
 - Doorrijden gebruikt de **gemeten** snelheid van NS, geen schatting.
 - Labels: Intercity → `IC`, Sprinter → `SPR`, regionale treinen → hun lijncode (`RS18`, `RE3`).
 - Treinnummers vanaf 300000 (extra treinen en materieelritten) staan niet in de dienstregeling. Die worden getoond zonder route en bestemming.
+
+## Aankomsttijden en vertraging
+
+Klik je op een voertuig, dan zie je per halte de verwachte tijd, de vertraging en "over X min" voor de volgende halte. Onder de bestemming staat hoe punctueel het voertuig rijdt: 🟢 op tijd, 🟠 2–4 min, 🔴 5+ min, of "Rit uitgevallen".
+
+- **Geplande tijden**: `gtfs:update` importeert nu ook de tijden uit `stop_times.txt`. De 1,09 miljoen ritten gebruiken samen ~49.000 unieke tijdprofielen; per rit worden alleen de starttijd en een verwijzing naar het profiel opgeslagen (+16 MB).
+- **Verwachte tijden**: `tripUpdates.pb` van OVapi (~3,6 MB, ~7.300 ritten van bus, tram en metro). Voor treinen zijn er alleen geplande tijden.
+- **Polling**: posities en verwachte tijden worden om en om opgehaald, elk één keer per minuut, om onder de rate limit van OVapi te blijven.
+- `GET /api/trips/:tripId/times` geeft per halte de geplande en verwachte tijden (unix-seconden) en de vertraging. `/api/vehicles` geeft per voertuig `delay` (seconden) bij de huidige of volgende halte.
+- Heeft een halte geen update, dan loopt de vertraging van de vorige halte door (volgens de GTFS-RT-spec).
+
+### Wat de feed nog meer vertelt
+
+- **SKIPPED**: de rit komt niet langs die halte, door een ingekorte rit of een omleiding. De app streept zulke haltes door ("Rijdt niet via deze halte").
+- **CANCELED**: de rit is uitgevallen. Dat geldt voor ~18% van de ritten in de feed, vooral ritten die nog moeten vertrekken.
+- **NO_DATA**: vanaf die halte zijn er alleen geplande tijden.
+
+Verder: de NS API geeft soms een onvolledig antwoord (bijvoorbeeld 13 in plaats van ~195 treinen). Dan houdt de backend de vorige lijst vast.

@@ -25,6 +25,8 @@ export type ApiVehicle = {
   speed?: number;
   /** Route vóór het voertuig tot de volgende halte (alleen met ?paths=1). */
   path?: [number, number][];
+  /** Vertraging in seconden bij de huidige/volgende halte (negatief = te vroeg). */
+  delay?: number;
 };
 
 export type VehiclesResponse = {
@@ -53,3 +55,18 @@ export type LineVariant = {
   approximate: boolean;
 };
 export type LineRoutesResponse = { line: string; variants: LineVariant[] };
+
+/** Tijden van één halte van een rit (unix-seconden); `delay` in seconden, negatief = te vroeg. */
+export type StopTime = {
+  sequence: number;
+  scheduledArrival?: number;
+  scheduledDeparture?: number;
+  expectedArrival?: number;
+  expectedDeparture?: number;
+  delay?: number;
+  /** De rit komt niet langs deze halte (ingekort of omgeleid). */
+  skipped?: boolean;
+};
+
+/** GET /api/trips/:tripId/times */
+export type TripStopTimes = { tripId: string; serviceDate: string; realtime: boolean; canceled: boolean; stops: StopTime[] };

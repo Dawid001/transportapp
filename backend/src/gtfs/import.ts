@@ -111,8 +111,8 @@ export async function importGtfs(): Promise<void> {
     if (fileName === "shapes.txt") {
       console.log(`shapes: ${(await importShapes(db, stream)).toLocaleString("nl-NL")} routes`);
     } else if (fileName === "stop_times.txt") {
-      const { trips, patterns } = await importStopPatterns(db, stream);
-      console.log(`stop_times: ${trips.toLocaleString("nl-NL")} ritten → ${patterns.toLocaleString("nl-NL")} unieke haltepatronen`);
+      const { trips, patterns, profiles } = await importStopPatterns(db, stream);
+      console.log(`stop_times: ${trips.toLocaleString("nl-NL")} ritten → ${patterns.toLocaleString("nl-NL")} haltepatronen, ${profiles.toLocaleString("nl-NL")} tijdprofielen`);
     } else {
       const table = tableByFile.get(fileName)!;
       const count = await importTable(db, table, stream);

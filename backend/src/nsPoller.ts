@@ -1,6 +1,7 @@
 import type { openGtfs } from "./gtfs/lookup.js";
 import { createMotionEstimator } from "./motion.js";
-import { fetchNsTrains, NsRateLimitError, serviceDate, trainLabel } from "./ns.js";
+import { fetchNsTrains, NsRateLimitError, trainLabel } from "./ns.js";
+import { serviceDate } from "./time.js";
 import type { ApiVehicle } from "./server.js";
 
 // De NS API heeft een daglimiet per key; elke 20 s is ~4.300 calls per dag. De posities zijn vers
@@ -55,6 +56,13 @@ export function startNsPoller(gtfs: Gtfs, apiKey: string) {
         nowSec,
       );
       for (const v of vehicles) v.path = motions.get(v.id)?.path;
+
+      // De NS API geeft soms een onvolledig antwoord (gezien: 13 i.p.v. ~195 treinen). Bij zo'n plotselinge
+      // daling de vorige (hooguit 3 min oude) lijst houden, anders verdwijnen treinen even van de kaart.
+      if (state && vehicles.length < state.vehicles.length * 0.5 && Date.now() - state.updatedAt < 180_000) {
+        console.warn(`[NS] Onvolledig antwoord (${vehicles.length} i.p.v. ~${state.vehicles.length} treinen), vorige lijst blijft staan`);
+        return NS_POLL_INTERVAL_MS;
+      }
 
       const unmatched = vehicles.filter((v) => !v.tripId).length;
       state = { updatedAt: Date.now(), vehicles, unmatched };
