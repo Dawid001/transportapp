@@ -284,5 +284,5 @@ export function openGtfs() {
     return row?.trip_id ?? null;
   }
 
-  return { lookup, tripRoute, lineRoutes, trainTrip, close: () => db.close() };
+  return { db, lookup, tripRoute, lineRoutes, trainTrip, close: () => db.close() };
 }

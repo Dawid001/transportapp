@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapGeoJSONFeature } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { ApiVehicle, Mode, LineRoutesResponse, LineVariant, RouteStop, TripRoute, VehiclesResponse } from "@/lib/types";
-import { boundsOf, lineRoutesGeo, tripRouteGeo } from "@/lib/routeGeo";
+import type { ApiVehicle, Departure, Mode, Place, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
+import { tripRouteGeo } from "@/lib/routeGeo";
 import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
-import { SearchBar } from "./SearchBar";
+import { SearchBox } from "./SearchBox";
 import { Legend } from "./Legend";
 import { StatusPill, type Status } from "./StatusPill";
+import { StopSheet } from "./StopSheet";
 import { VehicleSheet } from "./VehicleSheet";
 
 // De backend ververst elke 20s; door vaker te vragen zien we nieuwe posities sneller.
@@ -20,6 +21,8 @@ const PATHS_MIN_ZOOM = 12;
 /** Doorrijden hoeft niet op 60 fps; dit spaart batterij. */
 const FRAME_MS = 1000 / 30;
 const NL_CENTER: [number, number] = [5.29, 52.13];
+/** Vanaf dit zoomniveau staan haltes op de kaart. */
+const STOPS_MIN_ZOOM = 14.5;
 
 
 const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
@@ -55,15 +58,15 @@ export function LiveMap() {
   const selectedIdRef = useRef<string | null>(null);
   const [follow, setFollow] = useState(false);
   const followRef = useRef(false);
-  const [lineFilter, setLineFilter] = useState<string | null>(null);
-  const lineFilterRef = useRef<string | null>(null);
+  const [selectedStop, setSelectedStop] = useState<StopSummary | null>(null);
+  const stopsRef = useRef(new Map<string, StopSummary>());
+  const stopsAbortRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<Status>({ state: "loading" });
   const [modeCounts, setModeCounts] = useState<Partial<Record<Mode, number>>>({});
   const modeCountsKeyRef = useRef("");
   const visibleCount = Object.values(modeCounts).reduce((sum, n) => sum + (n ?? 0), 0);
   const [mapReady, setMapReady] = useState(false);
   const [tripRoute, setTripRoute] = useState<TripRoute | null>(null);
-  const [lineVariants, setLineVariants] = useState<LineVariant[] | null>(null);
   // Alleen tonen als de route bij het huidige voertuig hoort (voorkomt een verouderde route na wisselen).
   const activeTripRoute = tripRoute && tripRoute.tripId === selected?.tripId ? tripRoute : null;
 
@@ -71,8 +74,7 @@ export function LiveMap() {
   useEffect(() => {
     selectedIdRef.current = selected?.id ?? null;
     followRef.current = follow;
-    lineFilterRef.current = lineFilter;
-  }, [selected, follow, lineFilter]);
+  }, [selected, follow]);
 
   const progressAt = (now: number) => Math.min(1, (now - animStartRef.current) / ANIMATION_MS);
   const serverNow = () => Date.now() + clockOffsetRef.current;
@@ -82,11 +84,9 @@ export function LiveMap() {
     if (!source) return;
     const now = serverNow();
     const nowSec = now / 1000;
-    const line = lineFilterRef.current?.toLowerCase();
     const features: GeoJSON.Feature[] = [];
     const counts: Partial<Record<Mode, number>> = {};
     for (const v of vehiclesRef.current.values()) {
-      if (line && v.line?.toLowerCase() !== line) continue;
       counts[v.mode] = (counts[v.mode] ?? 0) + 1;
       const motion = motionRef.current.get(v.id);
       features.push({
@@ -200,6 +200,47 @@ export function LiveMap() {
     }
   }, [applyVehicles]);
 
+  // Halte kiezen (uit het zoekvak of op de kaart): vertrekbord openen, voertuigselectie sluiten.
+  const selectStop = useCallback((stop: StopSummary, fly = true) => {
+    setSelected(null);
+    selectedIdRef.current = null;
+    setFollow(false);
+    setSelectedStop(stop);
+    if (fly) mapRef.current?.flyTo({ center: [stop.lng, stop.lat], zoom: Math.max(mapRef.current.getZoom(), 16), duration: 900 });
+  }, []);
+
+  // Haltes in beeld ophalen (alleen vanaf straatniveau).
+  const loadStops = useCallback(async () => {
+    const map = mapRef.current;
+    const source = map?.getSource<GeoJSONSource>("stops");
+    if (!map || !source) return;
+    if (map.getZoom() < STOPS_MIN_ZOOM) {
+      source.setData(EMPTY);
+      return;
+    }
+    const b = map.getBounds();
+    const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((n) => n.toFixed(4)).join(",");
+    stopsAbortRef.current?.abort();
+    const controller = new AbortController();
+    stopsAbortRef.current = controller;
+    try {
+      const res = await fetch(`/api/stops?bbox=${bbox}`, { signal: controller.signal });
+      if (!res.ok) return;
+      const { stops } = (await res.json()) as { stops: StopSummary[] };
+      stopsRef.current = new Map(stops.map((st) => [st.id, st]));
+      source.setData({
+        type: "FeatureCollection",
+        features: stops.map((st) => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [st.lng, st.lat] },
+          properties: { id: st.id, name: st.name, mode: st.modes[0] ?? "other" },
+        })),
+      });
+    } catch {
+      // afgebroken of backend weg: haltes blijven zoals ze waren
+    }
+  }, []);
+
   // Kaart opzetten (één keer).
   useEffect(() => {
     let cancelled = false;
@@ -240,6 +281,9 @@ export function LiveMap() {
         m.addSource("vehicles", { type: "geojson", data: EMPTY });
         m.addSource("route", { type: "geojson", data: EMPTY });
         m.addSource("route-stops", { type: "geojson", data: EMPTY });
+        m.addSource("stops", { type: "geojson", data: EMPTY });
+        m.addSource("selected-stop", { type: "geojson", data: EMPTY });
+        m.addSource("place", { type: "geojson", data: EMPTY });
 
         // Routelagen eerst toevoegen, zodat voertuigen er bovenop liggen.
         m.addLayer({
@@ -310,6 +354,62 @@ export function LiveMap() {
           },
         });
 
+        // Haltes (vanaf straatniveau): wit bolletje met rand in de kleur van de belangrijkste vervoerswijze.
+        m.addLayer({
+          id: "stops",
+          type: "circle",
+          source: "stops",
+          minzoom: STOPS_MIN_ZOOM,
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 14.5, 3.5, 17, 6],
+            "circle-color": dark ? "#171717" : "#ffffff",
+            "circle-stroke-color": MODE_COLOR,
+            "circle-stroke-width": 2,
+          },
+        });
+        m.addLayer({
+          id: "stop-labels",
+          type: "symbol",
+          source: "stops",
+          minzoom: 16,
+          layout: {
+            "text-field": ["get", "name"],
+            "text-font": ["Noto Sans Regular"],
+            "text-size": 11,
+            "text-anchor": "top",
+            "text-offset": [0, 0.8],
+            "text-optional": true,
+          },
+          paint: {
+            "text-color": dark ? "#d4d4d4" : "#404040",
+            "text-halo-color": dark ? "#0a0a0a" : "#ffffff",
+            "text-halo-width": 1.5,
+          },
+        });
+        m.addLayer({
+          id: "selected-stop",
+          type: "circle",
+          source: "selected-stop",
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 6, 16, 9],
+            "circle-color": dark ? "#171717" : "#ffffff",
+            "circle-stroke-color": "#facc15",
+            "circle-stroke-width": 4,
+          },
+        });
+        // Gekozen plaats/adres uit het zoekvak.
+        m.addLayer({
+          id: "place",
+          type: "circle",
+          source: "place",
+          paint: {
+            "circle-radius": 8,
+            "circle-color": "#ef4444",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 3,
+          },
+        });
+
         m.addLayer({
           id: "vehicles",
           type: "circle",
@@ -349,29 +449,43 @@ export function LiveMap() {
           const feature = e.features?.[0] as MapGeoJSONFeature | undefined;
           const vehicle = feature && vehiclesRef.current.get(String(feature.properties.id));
           if (!vehicle) return;
+          setSelectedStop(null);
           setSelected(vehicle);
           selectedIdRef.current = vehicle.id;
           render(progressAt(performance.now()));
         });
+        m.on("click", "stops", (e) => {
+          // Een voertuig bovenop de halte gaat voor.
+          if (m.queryRenderedFeatures(e.point, { layers: ["vehicles"] }).length) return;
+          const stop = stopsRef.current.get(String(e.features?.[0]?.properties.id));
+          if (stop) selectStop(stop, false);
+        });
         m.on("click", (e) => {
-          if (m.queryRenderedFeatures(e.point, { layers: ["vehicles", "route-stops"] }).length) return;
+          if (m.queryRenderedFeatures(e.point, { layers: ["vehicles", "route-stops", "stops"] }).length) return;
+          setSelectedStop(null);
           setSelected(null);
           selectedIdRef.current = null;
           setFollow(false);
           render(progressAt(performance.now()));
         });
-        m.on("mouseenter", "vehicles", () => (m.getCanvas().style.cursor = "pointer"));
-        m.on("mouseleave", "vehicles", () => (m.getCanvas().style.cursor = ""));
+        for (const layer of ["vehicles", "stops"]) {
+          m.on("mouseenter", layer, () => (m.getCanvas().style.cursor = "pointer"));
+          m.on("mouseleave", layer, () => (m.getCanvas().style.cursor = ""));
+        }
 
         m.on("moveend", () => {
           clearTimeout(moveTimer);
-          moveTimer = setTimeout(load, 250);
+          moveTimer = setTimeout(() => {
+            void load();
+            void loadStops();
+          }, 250);
         });
         // Handmatig slepen stopt het volgen.
         m.on("dragstart", () => setFollow(false));
 
         setMapReady(true);
         void load();
+        void loadStops();
         refreshTimer = setInterval(load, REFRESH_MS);
       });
     })();
@@ -381,17 +495,13 @@ export function LiveMap() {
       clearTimeout(moveTimer);
       clearInterval(refreshTimer);
       abortRef.current?.abort();
+      stopsAbortRef.current?.abort();
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       map?.remove();
       mapRef.current = null;
       setMapReady(false);
     };
-  }, [load, render]);
-
-  // Opnieuw tekenen als het lijnfilter verandert.
-  useEffect(() => {
-    render(progressAt(performance.now()));
-  }, [lineFilter, render]);
+  }, [load, loadStops, render, selectStop]);
 
   // Route van het geselecteerde voertuig ophalen.
   const selectedTripId = selected?.tripId;
@@ -405,39 +515,63 @@ export function LiveMap() {
     return () => controller.abort();
   }, [selectedTripId]);
 
-  // Route tekenen: de rit van het geselecteerde voertuig, anders het traject van de gezochte lijn.
+  // Route tekenen van het geselecteerde voertuig.
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    const geo = activeTripRoute ? tripRouteGeo(activeTripRoute, selected) : lineVariants ? lineRoutesGeo(lineVariants) : null;
+    const geo = activeTripRoute ? tripRouteGeo(activeTripRoute, selected) : null;
     map.getSource<GeoJSONSource>("route")?.setData(geo?.lines ?? EMPTY);
     map.getSource<GeoJSONSource>("route-stops")?.setData(geo?.stops ?? EMPTY);
-  }, [mapReady, activeTripRoute, lineVariants, selected]);
+  }, [mapReady, activeTripRoute, selected]);
 
-  const searchLine = useCallback(async (line: string | null) => {
-    setLineFilter(line);
-    if (!line) {
-      setLineVariants(null);
-      return null;
+  // Gekozen halte markeren.
+  useEffect(() => {
+    const source = mapRef.current?.getSource<GeoJSONSource>("selected-stop");
+    if (!mapReady || !source) return;
+    source.setData(
+      selectedStop
+        ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [selectedStop.lng, selectedStop.lat] }, properties: {} }] }
+        : EMPTY,
+    );
+  }, [mapReady, selectedStop]);
+
+
+  const selectPlace = useCallback((place: Place) => {
+    setSelectedStop(null);
+    setSelected(null);
+    selectedIdRef.current = null;
+    setFollow(false);
+    mapRef.current?.getSource<GeoJSONSource>("place")?.setData({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [place.lng, place.lat] }, properties: {} }],
+    });
+    // Een plaats is groter dan een straat of adres.
+    mapRef.current?.flyTo({ center: [place.lng, place.lat], zoom: place.type === "woonplaats" ? 14 : 16.5, duration: 900 });
+  }, []);
+
+  const clearSearch = useCallback(() => {
+    setSelectedStop(null);
+    mapRef.current?.getSource<GeoJSONSource>("place")?.setData(EMPTY);
+  }, []);
+
+  // Vanuit het vertrekbord: het voertuig van die rit selecteren en ernaartoe gaan.
+  const showTrip = useCallback(async (departure: Departure) => {
+    let vehicle = [...vehiclesRef.current.values()].find((v) => v.tripId === departure.tripId);
+    if (!vehicle) {
+      const res = await fetch(`/api/vehicles?trip=${encodeURIComponent(departure.tripId)}`).catch(() => null);
+      const data = res?.ok ? ((await res.json()) as VehiclesResponse) : null;
+      vehicle = data?.vehicles[0];
     }
-    const [vehiclesRes, routesRes] = await Promise.all([
-      fetch(`/api/vehicles?line=${encodeURIComponent(line)}`),
-      fetch(`/api/lines/${encodeURIComponent(line)}`),
-    ]);
-    if (!vehiclesRes.ok) return "Zoeken mislukt";
-    const data: VehiclesResponse = await vehiclesRes.json();
-    const variants = routesRes.ok ? ((await routesRes.json()) as LineRoutesResponse).variants : [];
-    setLineVariants(variants);
+    if (!vehicle) return;
+    setSelectedStop(null);
+    setSelected(vehicle);
+    selectedIdRef.current = vehicle.id;
+    mapRef.current?.flyTo({ center: [vehicle.lng, vehicle.lat], zoom: Math.max(mapRef.current.getZoom(), 15), duration: 900 });
+  }, []);
 
-    if (data.count === 0 && variants.length === 0) return `Lijn ${line} niet gevonden`;
-
-    // Inzoomen op voertuigen én trajecten, zodat je de hele lijn ziet.
-    const bounds = boundsOf([...data.vehicles.map((v): [number, number] => [v.lng, v.lat]), ...variants.flatMap((v) => v.shape)]);
-    if (bounds) mapRef.current?.fitBounds(bounds, { padding: 80, maxZoom: 14, duration: 800 });
-
-    if (data.count === 0) return `Geen voertuigen van lijn ${line} onderweg; alleen de route`;
-    const operators = new Set(data.vehicles.map((v) => v.agencyName ?? v.operator));
-    return `${data.count} ${data.count === 1 ? "voertuig" : "voertuigen"}${operators.size > 1 ? ` bij ${operators.size} vervoerders` : ""}`;
+  const mapCenter = useCallback(() => {
+    const c = mapRef.current?.getCenter();
+    return c ? { lat: c.lat, lng: c.lng } : undefined;
   }, []);
 
   const flyToStop = useCallback((stop: RouteStop) => {
@@ -466,10 +600,12 @@ export function LiveMap() {
       <div ref={containerRef} className="h-full w-full" />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col gap-2 p-3 pr-14 sm:max-w-md sm:pr-3">
-        <SearchBar onSearch={searchLine} />
+        <SearchBox near={mapCenter} onSelectStop={selectStop} onSelectPlace={selectPlace} onClear={clearSearch} />
         <StatusPill status={status} visibleCount={visibleCount} />
         <Legend counts={modeCounts} />
       </div>
+
+      {!selected && selectedStop && <StopSheet stop={selectedStop} onClose={() => setSelectedStop(null)} onShowTrip={showTrip} />}
 
       {selected && (
         <VehicleSheet

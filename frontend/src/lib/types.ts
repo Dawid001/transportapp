@@ -70,3 +70,31 @@ export type StopTime = {
 
 /** GET /api/trips/:tripId/times */
 export type TripStopTimes = { tripId: string; serviceDate: string; realtime: boolean; canceled: boolean; stops: StopTime[] };
+
+/** Halte zoals de reiziger hem ziet (alle perrons/richtingen samen). */
+export type StopSummary = { id: string; name: string; lat: number; lng: number; modes: Mode[] };
+
+/** Plaats, straat of adres (PDOK). */
+export type Place = { id: string; name: string; type: "woonplaats" | "weg" | "adres" | "postcode"; lat: number; lng: number };
+
+/** GET /api/search */
+export type SearchResponse = { stops: StopSummary[]; places: Place[] };
+
+export type Departure = {
+  tripId: string;
+  line?: string;
+  headsign?: string;
+  mode: Mode;
+  agencyName?: string;
+  platform?: string;
+  /** Unix-seconden. */
+  scheduled: number;
+  expected?: number;
+  delay?: number;
+  canceled?: boolean;
+  skipped?: boolean;
+  live?: boolean;
+};
+
+/** GET /api/stops/:id/departures */
+export type DeparturesResponse = { stop: StopSummary; from: number; updatedAt: number | null; departures: Departure[] };

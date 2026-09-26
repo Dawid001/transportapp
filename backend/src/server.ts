@@ -1,13 +1,17 @@
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fetchVehicles, RateLimitError } from "./fetchVehicles.js";
 import { openGtfs, type Mode } from "./gtfs/lookup.js";
 import { DATA_DIR } from "./gtfs/paths.js";
 import { createMotionEstimator } from "./motion.js";
 import { startNsPoller } from "./nsPoller.js";
+import { createDepartures } from "./departures.js";
+import { searchPlaces } from "./places.js";
+import { createStopIndex, type StopGroup } from "./stopIndex.js";
 import { tripStopTimes, vehicleDelay } from "./stopTimes.js";
+import { createTimetable } from "./timetable.js";
 import { fetchTripUpdates, type TripUpdateInfo } from "./tripUpdates.js";
 
 // Geheime instellingen (NS_API_KEY) uit backend/.env.
@@ -80,6 +84,25 @@ let etag: string | undefined = cache?.etag;
 let lastError: string | null = null;
 
 let tripUpdates: { updatedAt: number; etag?: string; updates: Map<string, TripUpdateInfo> } | null = null;
+
+// Dienstregeling in het geheugen + haltezoeker (samen ~1,5 s bij het opstarten).
+const timetable = createTimetable(gtfs.db);
+const stopIndex = createStopIndex(gtfs.db, timetable);
+const departures = createDepartures({
+  db: gtfs.db,
+  timetable,
+  lookup: (tripId) => gtfs.lookup(tripId),
+  tripUpdate: (tripId) => tripUpdates?.updates.get(tripId),
+  liveTripIds: () => {
+    const ids = new Set<string>();
+    for (const v of cache?.vehicles ?? []) if (v.tripId) ids.add(v.tripId);
+    for (const v of ns?.state?.vehicles ?? []) if (v.tripId) ids.add(v.tripId);
+    return ids;
+  },
+});
+
+/** Halte zonder de lijst interne halte-ID's (die heeft de frontend niet nodig). */
+const publicStop = ({ stopIds: _ids, ...stop }: StopGroup) => stop;
 
 async function pollTripUpdates(): Promise<number> {
   try {
@@ -183,7 +206,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown, cacheSecon
   res.end(JSON.stringify(body));
 }
 
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
+  try {
+    await handle(req, res);
+  } catch (err) {
+    console.error("Fout bij", req.url, err);
+    if (!res.headersSent) sendJson(res, 500, { error: "Interne fout" });
+  }
+});
+
+async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   if (req.method !== "GET") return sendJson(res, 405, { error: "Alleen GET" });
@@ -216,6 +248,9 @@ const server = createServer((req, res) => {
     }
     if (line) vehicles = vehicles.filter((v) => v.line?.toLowerCase() === line.toLowerCase());
     if (mode) vehicles = vehicles.filter((v) => v.mode === mode);
+    // Het voertuig van één rit (vanuit het vertrekbord "toon op kaart").
+    const trip = url.searchParams.get("trip");
+    if (trip) vehicles = vehicles.filter((v) => v.tripId === trip);
     // Paden alleen op verzoek: op landelijk zoomniveau zie je de beweging niet en scheelt het veel data.
     const withPaths = url.searchParams.get("paths") === "1";
     const updates = tripUpdates?.updates;
@@ -261,11 +296,57 @@ const server = createServer((req, res) => {
     return sendJson(res, 200, { line, variants: gtfs.lineRoutes(line) }, 600);
   }
 
+  // Zoeken op haltes (eigen dienstregeling) en plaatsen/adressen (PDOK).
+  if (url.pathname === "/api/search") {
+    const q = (url.searchParams.get("q") ?? "").trim();
+    if (q.length < 2) return sendJson(res, 200, { stops: [], places: [] });
+    const lat = Number(url.searchParams.get("lat"));
+    const lng = Number(url.searchParams.get("lng"));
+    const near = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 ? { lat, lng } : undefined;
+    const stops = stopIndex.search(q, 6, near).map(publicStop);
+    const places = await searchPlaces(q, 5).catch((err) => {
+      console.error("PDOK zoeken mislukt:", err instanceof Error ? err.message : err);
+      return [];
+    });
+    return sendJson(res, 200, { stops, places });
+  }
+
+  if (url.pathname === "/api/stops") {
+    const bbox = parseBbox(url.searchParams.get("bbox"));
+    if (!bbox || bbox === "invalid") return sendJson(res, 400, { error: "bbox is verplicht: minLng,minLat,maxLng,maxLat" });
+    return sendJson(res, 200, { stops: stopIndex.inBbox(bbox).map(publicStop) }, 3600);
+  }
+
+  const stopMatch = url.pathname.match(/^\/api\/stops\/([^/]+)(\/departures)?$/);
+  if (stopMatch) {
+    const stop = stopIndex.byId(decodeURIComponent(stopMatch[1]));
+    if (!stop) return sendJson(res, 404, { error: "Halte niet gevonden" });
+    if (!stopMatch[2]) return sendJson(res, 200, publicStop(stop), 3600);
+    const time = Number(url.searchParams.get("time"));
+    const from = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
+    return sendJson(res, 200, {
+      stop: publicStop(stop),
+      from,
+      updatedAt: tripUpdates?.updatedAt ?? null,
+      departures: departures.forStop(stop, from),
+    });
+  }
+
   sendJson(res, 404, {
     error: "Niet gevonden",
-    endpoints: ["/api/vehicles", "/api/trips/:tripId", "/api/trips/:tripId/times", "/api/lines/:line", "/api/health"],
+    endpoints: [
+      "/api/vehicles",
+      "/api/search?q=",
+      "/api/stops?bbox=",
+      "/api/stops/:id",
+      "/api/stops/:id/departures",
+      "/api/trips/:tripId",
+      "/api/trips/:tripId/times",
+      "/api/lines/:line",
+      "/api/health",
+    ],
   });
-});
+}
 
 server.listen(PORT, () => {
   console.log(`API draait op http://localhost:${PORT}/api/vehicles`);
