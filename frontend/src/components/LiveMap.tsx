@@ -11,7 +11,6 @@ import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/l
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
 import { JourneySheet } from "./JourneySheet";
 import { PlannerPanel } from "./PlannerPanel";
-import { Legend } from "./Legend";
 import { StatusPill, type Status } from "./StatusPill";
 import { StopSheet } from "./StopSheet";
 import { VehicleSheet } from "./VehicleSheet";
@@ -788,7 +787,6 @@ export function LiveMap() {
           onUseRoute={applyRoute}
         />
         <StatusPill status={status} visibleCount={visibleCount} />
-        <Legend counts={modeCounts} />
       </div>
 
       {!selected && !selectedStop && to && (
