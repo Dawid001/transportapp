@@ -7,26 +7,34 @@ import { MODE_COLORS, MODE_LABELS } from "@/lib/format";
 const PLACE_LABELS: Record<Place["type"], string> = { woonplaats: "Plaats", weg: "Straat", adres: "Adres", postcode: "Postcode" };
 const DEBOUNCE_MS = 200;
 
-type Result = { kind: "stop"; stop: StopSummary } | { kind: "place"; place: Place };
+type Result = { kind: "location" } | { kind: "stop"; stop: StopSummary } | { kind: "place"; place: Place };
 
 type Props = {
-  placeholder?: string;
+  /** Korte naam voor het veld, bv. "Van" of "Naar". */
+  label: string;
+  placeholder: string;
+  /** Tekst in het veld bij het (opnieuw) tonen, bv. de gekozen halte. Wijzig de `key` om te resetten. */
+  initialText?: string;
+  /** "Mijn locatie" als eerste keuze aanbieden. */
+  offerMyLocation?: boolean;
   /** Rond dit punt zoeken (bv. het midden van de kaart), zodat haltes in de buurt hoger staan. */
   near?: () => { lat: number; lng: number } | undefined;
   onSelectStop: (stop: StopSummary) => void;
   onSelectPlace: (place: Place) => void;
+  onSelectMyLocation?: () => void;
   onClear?: () => void;
 };
 
-export function SearchBox({ placeholder = "Zoek een halte, station of plaats", near, onSelectStop, onSelectPlace, onClear }: Props) {
-  const [query, setQuery] = useState("");
+export function SearchBox({ label, placeholder, initialText = "", offerMyLocation, near, onSelectStop, onSelectPlace, onSelectMyLocation, onClear }: Props) {
+  const [query, setQuery] = useState(initialText);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
   const listId = useId();
-  // Na het kiezen van een resultaat staat de naam in het vak; daar hoeven we niet opnieuw op te zoeken.
-  const chosenRef = useRef<string | null>(null);
+  const inputId = useId();
+  // De gekozen naam staat in het vak; daar hoeven we niet opnieuw op te zoeken.
+  const [chosen, setChosen] = useState<string | null>(initialText || null);
   const nearRef = useRef(near);
   useEffect(() => {
     nearRef.current = near;
@@ -35,7 +43,7 @@ export function SearchBox({ placeholder = "Zoek een halte, station of plaats", n
   // Zoeken terwijl je typt (met een korte pauze, en oude verzoeken afbreken).
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 2 || query === chosenRef.current) return;
+    if (q.length < 2 || query === chosen) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const params = new URLSearchParams({ q });
@@ -59,47 +67,61 @@ export function SearchBox({ placeholder = "Zoek een halte, station of plaats", n
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, chosen]);
 
-  const items: Result[] =
-    query.trim().length >= 2 && results
+  const typed = query.trim().length >= 2 && query !== chosen;
+  const items: Result[] = [
+    ...(offerMyLocation && !typed ? [{ kind: "location" as const }] : []),
+    ...(typed && results
       ? [...results.stops.map((stop) => ({ kind: "stop" as const, stop })), ...results.places.map((place) => ({ kind: "place" as const, place }))]
-      : [];
+      : []),
+  ];
 
   function choose(item: Result) {
     setOpen(false);
-    chosenRef.current = item.kind === "stop" ? item.stop.name : item.place.name;
-    if (item.kind === "stop") {
+    if (item.kind === "location") {
+      setChosen("Mijn locatie");
+      setQuery("Mijn locatie");
+      onSelectMyLocation?.();
+    } else if (item.kind === "stop") {
+      setChosen(item.stop.name);
       setQuery(item.stop.name);
       onSelectStop(item.stop);
     } else {
+      setChosen(item.place.name);
       setQuery(item.place.name);
       onSelectPlace(item.place);
     }
   }
 
   function clear() {
+    setChosen(null);
     setQuery("");
     setResults(null);
-    setOpen(false);
+    setOpen(true);
     onClear?.();
   }
 
   const showList = open && items.length > 0;
 
   return (
-    <div className="pointer-events-auto relative">
-      <div className="flex items-center gap-2 rounded-2xl bg-white/95 px-4 py-2.5 shadow-lg ring-1 ring-black/5 backdrop-blur dark:bg-neutral-900/95 dark:ring-white/10">
-        <svg aria-hidden viewBox="0 0 20 20" className="size-4 shrink-0 fill-neutral-400">
-          <path d="M8.5 3a5.5 5.5 0 0 1 4.38 8.83l3.65 3.64a.75.75 0 1 1-1.06 1.06l-3.64-3.65A5.5 5.5 0 1 1 8.5 3Zm0 1.5a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
-        </svg>
+    <div className="relative">
+      <div className="flex items-center gap-2 px-3 py-2">
+        <label htmlFor={inputId} className="w-14 shrink-0 text-xs font-medium text-neutral-500">
+          {label}
+        </label>
         <input
+          id={inputId}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
             setOpen(true);
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={(e) => {
+            setOpen(true);
+            // Een gekozen waarde in één keer kunnen overschrijven.
+            if (query === chosen) e.target.select();
+          }}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
@@ -120,13 +142,12 @@ export function SearchBox({ placeholder = "Zoek een halte, station of plaats", n
           aria-expanded={showList}
           aria-controls={listId}
           aria-autocomplete="list"
-          aria-label={placeholder}
           enterKeyHint="search"
-          className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-neutral-400"
+          className={`min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-neutral-400 ${query === "Mijn locatie" ? "text-blue-600 dark:text-blue-400" : ""}`}
         />
         {loading && <span className="size-4 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-600" />}
         {query && !loading && (
-          <button type="button" onClick={clear} aria-label="Wissen" className="rounded-full px-1.5 text-neutral-400 hover:text-neutral-900 dark:hover:text-white">
+          <button type="button" onClick={clear} aria-label={`${label} wissen`} className="rounded-full px-1.5 text-neutral-400 hover:text-neutral-900 dark:hover:text-white">
             ✕
           </button>
         )}
@@ -136,18 +157,15 @@ export function SearchBox({ placeholder = "Zoek een halte, station of plaats", n
         <ul
           id={listId}
           role="listbox"
-          className="absolute inset-x-0 top-full z-10 mt-1.5 max-h-[60dvh] overflow-y-auto rounded-2xl bg-white py-1.5 shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
+          className="absolute inset-x-0 top-full z-20 mt-1 max-h-[55dvh] overflow-y-auto rounded-2xl bg-white py-1.5 shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
         >
           {items.map((item, i) => {
-            const firstPlace = item.kind === "place" && (i === 0 || items[i - 1].kind === "stop");
-            const firstStop = item.kind === "stop" && i === 0;
+            const prevKind = items[i - 1]?.kind;
+            const heading =
+              item.kind === "stop" && prevKind !== "stop" ? "Haltes" : item.kind === "place" && prevKind !== "place" ? "Plaatsen" : null;
             return (
-              <li key={item.kind === "stop" ? `s-${item.stop.id}` : `p-${item.place.id}`} role="presentation">
-                {(firstStop || firstPlace) && (
-                  <p className="px-4 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
-                    {item.kind === "stop" ? "Haltes" : "Plaatsen"}
-                  </p>
-                )}
+              <li key={item.kind === "location" ? "loc" : item.kind === "stop" ? `s-${item.stop.id}` : `p-${item.place.id}`} role="presentation">
+                {heading && <p className="px-4 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">{heading}</p>}
                 <button
                   type="button"
                   role="option"
@@ -157,11 +175,17 @@ export function SearchBox({ placeholder = "Zoek een halte, station of plaats", n
                   onClick={() => choose(item)}
                   className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${i === active ? "bg-neutral-100 dark:bg-neutral-800" : ""}`}
                 >
-                  {item.kind === "stop" ? <StopIcon stop={item.stop} /> : <PinIcon />}
+                  {item.kind === "location" ? <LocationIcon /> : item.kind === "stop" ? <StopIcon stop={item.stop} /> : <PinIcon />}
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate">{item.kind === "stop" ? item.stop.name : item.place.name}</span>
+                    <span className="block truncate">
+                      {item.kind === "location" ? "Mijn locatie" : item.kind === "stop" ? item.stop.name : item.place.name}
+                    </span>
                     <span className="block text-xs text-neutral-500">
-                      {item.kind === "stop" ? item.stop.modes.map((m) => MODE_LABELS[m]).join(" · ") : PLACE_LABELS[item.place.type]}
+                      {item.kind === "location"
+                        ? "Gebruik waar je nu bent"
+                        : item.kind === "stop"
+                          ? item.stop.modes.map((m) => MODE_LABELS[m]).join(" · ")
+                          : PLACE_LABELS[item.place.type]}
                     </span>
                   </span>
                 </button>
@@ -188,6 +212,16 @@ function PinIcon() {
     <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-neutral-500 dark:bg-neutral-800">
       <svg aria-hidden viewBox="0 0 20 20" className="size-4 fill-current">
         <path d="M10 2a6 6 0 0 0-6 6c0 4.5 6 10 6 10s6-5.5 6-10a6 6 0 0 0-6-6Zm0 8.25A2.25 2.25 0 1 1 10 5.75a2.25 2.25 0 0 1 0 4.5Z" />
+      </svg>
+    </span>
+  );
+}
+
+function LocationIcon() {
+  return (
+    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400">
+      <svg aria-hidden viewBox="0 0 20 20" className="size-4 fill-current">
+        <path d="M10 1.5a.75.75 0 0 1 .75.75v1.3a6.5 6.5 0 0 1 5.7 5.7h1.3a.75.75 0 0 1 0 1.5h-1.3a6.5 6.5 0 0 1-5.7 5.7v1.3a.75.75 0 0 1-1.5 0v-1.3a6.5 6.5 0 0 1-5.7-5.7h-1.3a.75.75 0 0 1 0-1.5h1.3a6.5 6.5 0 0 1 5.7-5.7v-1.3A.75.75 0 0 1 10 1.5ZM10 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0 2.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z" />
       </svg>
     </span>
   );

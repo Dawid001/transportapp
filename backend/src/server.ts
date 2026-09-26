@@ -8,6 +8,8 @@ import { DATA_DIR } from "./gtfs/paths.js";
 import { createMotionEstimator } from "./motion.js";
 import { startNsPoller } from "./nsPoller.js";
 import { createDepartures } from "./departures.js";
+import { trainLabel } from "./ns.js";
+import { createPlanner, type PlanPoint } from "./planner.js";
 import { searchPlaces } from "./places.js";
 import { createStopIndex, type StopGroup } from "./stopIndex.js";
 import { tripStopTimes, vehicleDelay } from "./stopTimes.js";
@@ -100,6 +102,45 @@ const departures = createDepartures({
     return ids;
   },
 });
+
+const planner = createPlanner({
+  db: gtfs.db,
+  timetable,
+  lookup: (tripId) => gtfs.lookup(tripId),
+  lineLabel: (info, mode) => (mode === "train" ? trainLabel(info?.line, info?.line ?? "") : info?.line),
+  tripShape: (tripId) => {
+    const route = gtfs.tripRoute(tripId);
+    return route && !route.approximate ? route.shape : null;
+  },
+  realtime: (tripId, date) => {
+    const u = tripUpdates?.updates.get(tripId);
+    if (!u || (u.startDate && u.startDate !== date)) return undefined;
+    return {
+      canceled: u.canceled,
+      at: (sequence) => {
+        const st = u.stops.get(sequence);
+        if (!st || st.skipped) return undefined;
+        return { dep: st.departureTime, arr: st.arrivalTime ?? st.departureTime };
+      },
+    };
+  },
+});
+
+/**
+ * Begin- of eindpunt van een reis uit de query: een halte (`fromStop=<id>`) of een punt
+ * (`fromLat`, `fromLng`, optioneel `fromName`).
+ */
+function planPoint(params: URLSearchParams, prefix: "from" | "to"): PlanPoint | null {
+  const stopId = params.get(`${prefix}Stop`);
+  if (stopId) {
+    const stop = stopIndex.byId(stopId);
+    return stop ? { name: stop.name, lat: stop.lat, lng: stop.lng, stopIds: stop.stopIds } : null;
+  }
+  const lat = Number(params.get(`${prefix}Lat`));
+  const lng = Number(params.get(`${prefix}Lng`));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0) return null;
+  return { name: params.get(`${prefix}Name`) || "Gekozen locatie", lat, lng };
+}
 
 /** Halte zonder de lijst interne halte-ID's (die heeft de frontend niet nodig). */
 const publicStop = ({ stopIds: _ids, ...stop }: StopGroup) => stop;
@@ -248,9 +289,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (line) vehicles = vehicles.filter((v) => v.line?.toLowerCase() === line.toLowerCase());
     if (mode) vehicles = vehicles.filter((v) => v.mode === mode);
-    // Het voertuig van één rit (vanuit het vertrekbord "toon op kaart").
-    const trip = url.searchParams.get("trip");
-    if (trip) vehicles = vehicles.filter((v) => v.tripId === trip);
+    // Eén of meer ritten (komma-gescheiden): de voertuigen van een geplande reis.
+    const trips = url.searchParams.get("trip")?.split(",").filter(Boolean);
+    if (trips?.length) vehicles = vehicles.filter((v) => v.tripId && trips.includes(v.tripId));
     // Paden alleen op verzoek: op landelijk zoomniveau zie je de beweging niet en scheelt het veel data.
     const withPaths = url.searchParams.get("paths") === "1";
     const updates = tripUpdates?.updates;
@@ -311,6 +352,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return sendJson(res, 200, { stops, places });
   }
 
+  // Reisplanner: /api/plan?fromStop=… | fromLat&fromLng&fromName, idem to…, time=unix-seconden (optioneel).
+  if (url.pathname === "/api/plan") {
+    const from = planPoint(url.searchParams, "from");
+    const to = planPoint(url.searchParams, "to");
+    if (!from || !to) return sendJson(res, 400, { error: "Van en naar zijn verplicht (halte of coördinaten)" });
+    const time = Number(url.searchParams.get("time"));
+    const at = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
+    return sendJson(res, 200, { from, to, time: at, journeys: planner.plan(from, to, at, 5) });
+  }
+
   if (url.pathname === "/api/stops") {
     const bbox = parseBbox(url.searchParams.get("bbox"));
     if (!bbox || bbox === "invalid") return sendJson(res, 400, { error: "bbox is verplicht: minLng,minLat,maxLng,maxLat" });
@@ -340,6 +391,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       "/api/stops?bbox=",
       "/api/stops/:id",
       "/api/stops/:id/departures",
+      "/api/plan?fromStop=|fromLat&fromLng&toStop=|toLat&toLng&time=",
       "/api/trips/:tripId",
       "/api/trips/:tripId/times",
       "/api/lines/:line",
@@ -350,6 +402,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 server.listen(PORT, () => {
   console.log(`API draait op http://localhost:${PORT}/api/vehicles`);
+  setTimeout(() => planner.warm(), 0);
   if (cache) {
     // Met bewaarde data wachten tot die een poll-interval oud is, anders lopen snelle herstarts tegen de 429 aan.
     const wait = Math.max(0, POLL_INTERVAL_MS - (Date.now() - cache.updatedAt));

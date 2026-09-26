@@ -98,3 +98,39 @@ export type Departure = {
 
 /** GET /api/stops/:id/departures */
 export type DeparturesResponse = { stop: StopSummary; from: number; updatedAt: number | null; departures: Departure[] };
+
+/** Begin- of eindpunt in de planner: een halte, een plaats/adres of je eigen locatie. */
+export type PlanEndpoint =
+  | { kind: "stop"; stop: StopSummary }
+  | { kind: "place"; place: Place }
+  | { kind: "location"; lat: number; lng: number };
+
+export type LegPlace = { name: string; lat: number; lng: number; stopId?: string; platform?: string };
+
+export type WalkLeg = { type: "walk"; from: LegPlace; to: LegPlace; departure: number; arrival: number; distance: number };
+
+export type TransitLeg = {
+  type: "transit";
+  mode: Mode;
+  line?: string;
+  headsign?: string;
+  agencyName?: string;
+  tripId: string;
+  from: LegPlace;
+  to: LegPlace;
+  departure: number;
+  arrival: number;
+  expectedDeparture?: number;
+  expectedArrival?: number;
+  canceled?: boolean;
+  stopsBetween: number;
+  fromSequence: number;
+  toSequence: number;
+  path: [number, number][];
+};
+
+export type Leg = WalkLeg | TransitLeg;
+export type Journey = { departure: number; arrival: number; transfers: number; legs: Leg[] };
+
+/** GET /api/plan */
+export type PlanResponse = { from: { name: string }; to: { name: string }; time: number; journeys: Journey[] };

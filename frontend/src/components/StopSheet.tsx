@@ -12,10 +12,13 @@ type Props = {
   onClose: () => void;
   /** Rit aangeklikt waarvan het voertuig live rijdt: toon dat voertuig op de kaart. */
   onShowTrip: (departure: Departure) => void;
+  /** Reis plannen naar of vanaf deze halte. */
+  onPlanTo: (stop: StopSummary) => void;
+  onPlanFrom: (stop: StopSummary) => void;
 };
 
 /** Vertrekbord van een halte. */
-export function StopSheet({ stop, onClose, onShowTrip }: Props) {
+export function StopSheet({ stop, onClose, onShowTrip, onPlanTo, onPlanFrom }: Props) {
   const [data, setData] = useState<DeparturesResponse | null>(null);
   const [error, setError] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -71,6 +74,14 @@ export function StopSheet({ stop, onClose, onShowTrip }: Props) {
             </svg>
           </button>
         </header>
+        <div className="flex gap-2 px-4 pb-2">
+          <button onClick={() => onPlanTo(stop)} className="flex-1 rounded-lg bg-blue-600 py-1.5 text-sm font-medium text-white hover:bg-blue-700">
+            Hierheen
+          </button>
+          <button onClick={() => onPlanFrom(stop)} className="flex-1 rounded-lg bg-neutral-100 py-1.5 text-sm font-medium hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700">
+            Vanaf hier
+          </button>
+        </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {!departures && !error && <p className="px-2 py-3 text-sm text-neutral-500">Vertrektijden laden…</p>}

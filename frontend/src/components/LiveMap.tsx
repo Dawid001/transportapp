@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExpressionSpecification, GeoJSONSource, Map as MlMap, MapGeoJSONFeature } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { ApiVehicle, Departure, Mode, Place, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
-import { tripRouteGeo } from "@/lib/routeGeo";
+import type { ApiVehicle, Departure, Journey, Mode, PlanEndpoint, PlanResponse, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
+import { boundsOf, tripRouteGeo } from "@/lib/routeGeo";
+import { endpointCoords, endpointParams, journeyGeo, journeyPoints } from "@/lib/journeyGeo";
 import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
-import { SearchBox } from "./SearchBox";
+import { JourneySheet } from "./JourneySheet";
+import { PlannerPanel } from "./PlannerPanel";
 import { Legend } from "./Legend";
 import { StatusPill, type Status } from "./StatusPill";
 import { StopSheet } from "./StopSheet";
@@ -23,6 +25,10 @@ const FRAME_MS = 1000 / 30;
 const NL_CENTER: [number, number] = [5.29, 52.13];
 /** Vanaf dit zoomniveau staan haltes op de kaart. */
 const STOPS_MIN_ZOOM = 14.5;
+/** Reizen met "nu vertrekken" regelmatig opnieuw plannen (vertragingen, gemiste bus). */
+const REPLAN_MS = 60_000;
+/** Live voertuigen van de reisopties verversen. */
+const JOURNEY_VEHICLES_MS = 15_000;
 
 
 const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
@@ -59,6 +65,18 @@ export function LiveMap() {
   const [follow, setFollow] = useState(false);
   const followRef = useRef(false);
   const [selectedStop, setSelectedStop] = useState<StopSummary | null>(null);
+
+  // Reisplanner
+  const [from, setFrom] = useState<PlanEndpoint | null>(null);
+  const [to, setTo] = useState<PlanEndpoint | null>(null);
+  const [planTime, setPlanTime] = useState<number | null>(null);
+  const [plan, setPlan] = useState<{ key: string; journeys: Journey[] } | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [journeyVehicles, setJourneyVehicles] = useState<Map<string, ApiVehicle>>(new Map());
+  // Rit-ID's van de gekozen reis: die voertuigen lichten op, de rest vervaagt.
+  const journeyTripsRef = useRef<Set<string> | null>(null);
   const stopsRef = useRef(new Map<string, StopSummary>());
   const stopsAbortRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<Status>({ state: "loading" });
@@ -97,6 +115,8 @@ export function LiveMap() {
           line: v.line ?? "",
           mode: v.mode,
           selected: v.id === selectedIdRef.current,
+          mine: !!v.tripId && !!journeyTripsRef.current?.has(v.tripId),
+          dim: !!journeyTripsRef.current && !(v.tripId && journeyTripsRef.current.has(v.tripId)),
           stale: v.timestamp ? nowSec - v.timestamp > STALE_AFTER_SECONDS : false,
         },
       });
@@ -283,7 +303,7 @@ export function LiveMap() {
         m.addSource("route-stops", { type: "geojson", data: EMPTY });
         m.addSource("stops", { type: "geojson", data: EMPTY });
         m.addSource("selected-stop", { type: "geojson", data: EMPTY });
-        m.addSource("place", { type: "geojson", data: EMPTY });
+        m.addSource("journey", { type: "geojson", data: EMPTY });
 
         // Routelagen eerst toevoegen, zodat voertuigen er bovenop liggen.
         m.addLayer({
@@ -397,15 +417,40 @@ export function LiveMap() {
             "circle-stroke-width": 4,
           },
         });
-        // Gekozen plaats/adres uit het zoekvak.
+        // Geplande reis: lopen gestippeld, ritten in de kleur van de vervoerswijze, begin/eind als punten.
         m.addLayer({
-          id: "place",
+          id: "journey-walk",
+          type: "line",
+          source: "journey",
+          filter: ["==", ["get", "kind"], "walk"],
+          layout: { "line-cap": "round" },
+          paint: { "line-color": dark ? "#a3a3a3" : "#525252", "line-width": 3, "line-dasharray": [0.5, 2] },
+        });
+        m.addLayer({
+          id: "journey-casing",
+          type: "line",
+          source: "journey",
+          filter: ["==", ["get", "kind"], "transit"],
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": dark ? "#0a0a0a" : "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 10] },
+        });
+        m.addLayer({
+          id: "journey-transit",
+          type: "line",
+          source: "journey",
+          filter: ["==", ["get", "kind"], "transit"],
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": MODE_COLOR, "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 14, 6] },
+        });
+        m.addLayer({
+          id: "journey-points",
           type: "circle",
-          source: "place",
+          source: "journey",
+          filter: ["match", ["get", "kind"], ["stop", "from", "to"], true, false],
           paint: {
-            "circle-radius": 8,
-            "circle-color": "#ef4444",
-            "circle-stroke-color": "#ffffff",
+            "circle-radius": ["match", ["get", "kind"], "stop", 5, 8],
+            "circle-color": ["match", ["get", "kind"], "from", "#2563eb", "to", "#ef4444", dark ? "#171717" : "#ffffff"],
+            "circle-stroke-color": ["match", ["get", "kind"], "stop", MODE_COLOR, "#ffffff"],
             "circle-stroke-width": 3,
           },
         });
@@ -423,10 +468,10 @@ export function LiveMap() {
               12, ["case", ["get", "selected"], 14, 11],
               16, ["case", ["get", "selected"], 16, 13],
             ],
-            "circle-stroke-width": ["case", ["get", "selected"], 4, 1.5],
-            "circle-stroke-color": ["case", ["get", "selected"], "#facc15", "#ffffff"],
-            "circle-opacity": ["case", ["get", "stale"], 0.35, 1],
-            "circle-stroke-opacity": ["case", ["get", "stale"], 0.35, 1],
+            "circle-stroke-width": ["case", ["get", "selected"], 4, ["get", "mine"], 4, 1.5],
+            "circle-stroke-color": ["case", ["get", "selected"], "#facc15", ["get", "mine"], "#10b981", "#ffffff"],
+            "circle-opacity": ["case", ["get", "dim"], 0.2, ["get", "stale"], 0.35, 1],
+            "circle-stroke-opacity": ["case", ["get", "dim"], 0.2, ["get", "stale"], 0.35, 1],
           },
         });
 
@@ -536,22 +581,133 @@ export function LiveMap() {
   }, [mapReady, selectedStop]);
 
 
-  const selectPlace = useCallback((place: Place) => {
-    setSelectedStop(null);
-    setSelected(null);
-    selectedIdRef.current = null;
-    setFollow(false);
-    mapRef.current?.getSource<GeoJSONSource>("place")?.setData({
-      type: "FeatureCollection",
-      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [place.lng, place.lat] }, properties: {} }],
-    });
-    // Een plaats is groter dan een straat of adres.
-    mapRef.current?.flyTo({ center: [place.lng, place.lat], zoom: place.type === "woonplaats" ? 14 : 16.5, duration: 900 });
+  // --- Reisplanner ------------------------------------------------------------------------------
+
+  const requestMyLocation = useCallback((target: "from" | "to") => {
+    setLocationError(null);
+    if (!navigator.geolocation) {
+      setLocationError("Je browser kan je locatie niet bepalen. Kies een vertrekpunt.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const ep: PlanEndpoint = { kind: "location", lat: pos.coords.latitude, lng: pos.coords.longitude };
+        if (target === "from") setFrom(ep);
+        else setTo(ep);
+      },
+      () => setLocationError("Je locatie is niet beschikbaar (toestemming geweigerd?). Kies een vertrekpunt."),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+    );
   }, []);
 
-  const clearSearch = useCallback(() => {
-    setSelectedStop(null);
-    mapRef.current?.getSource<GeoJSONSource>("place")?.setData(EMPTY);
+  const chooseTo = useCallback(
+    (ep: PlanEndpoint | null) => {
+      setTo(ep);
+      setSelectedJourney(null);
+      // Nog geen vertrekpunt? Dan vertrekken we vanaf waar je nu bent.
+      if (ep && !from) requestMyLocation("from");
+    },
+    [from, requestMyLocation],
+  );
+
+  const chooseFrom = useCallback((ep: PlanEndpoint | null) => {
+    setFrom(ep);
+    setSelectedJourney(null);
+  }, []);
+
+  const swap = useCallback(() => {
+    setFrom(to);
+    setTo(from);
+    setSelectedJourney(null);
+  }, [from, to]);
+
+  const closePlan = useCallback(() => {
+    setTo(null);
+    setPlan(null);
+    setSelectedJourney(null);
+  }, []);
+
+  // Plannen zodra van en naar bekend zijn; bij "nu" elke minuut opnieuw (vertragingen, gemiste bus).
+  const planKey = from && to ? JSON.stringify([endpointParams("from", from), endpointParams("to", to), planTime]) : null;
+  useEffect(() => {
+    if (!from || !to || !planKey) return;
+    let controller = new AbortController();
+    const run = () => {
+      controller.abort();
+      controller = new AbortController();
+      const params = new URLSearchParams({ ...endpointParams("from", from), ...endpointParams("to", to) });
+      if (planTime) params.set("time", String(planTime));
+      fetch(`/api/plan?${params}`, { signal: controller.signal })
+        .then((res) => (res.ok ? (res.json() as Promise<PlanResponse>) : Promise.reject(new Error(`HTTP ${res.status}`))))
+        .then((data) => {
+          setPlan({ key: planKey, journeys: data.journeys });
+          setPlanError(null);
+        })
+        .catch(() => !controller.signal.aborted && setPlanError("Plannen mislukt. Draait de backend?"));
+    };
+    run();
+    const timer = planTime ? undefined : setInterval(run, REPLAN_MS);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
+  }, [from, to, planTime, planKey]);
+
+  const journeys = plan && plan.key === planKey ? plan.journeys : null;
+  const activeJourney = selectedJourney !== null ? journeys?.[selectedJourney] : undefined;
+
+  // Live voertuigen van alle ritten in de reisopties.
+  const journeyTripIds = [...new Set((journeys ?? []).flatMap((j) => j.legs.flatMap((l) => (l.type === "transit" ? [l.tripId] : []))))].join(",");
+  useEffect(() => {
+    if (!journeyTripIds) return;
+    let controller = new AbortController();
+    const load = () => {
+      controller.abort();
+      controller = new AbortController();
+      fetch(`/api/vehicles?trip=${encodeURIComponent(journeyTripIds)}`, { signal: controller.signal })
+        .then((res) => (res.ok ? (res.json() as Promise<VehiclesResponse>) : null))
+        .then((data) => data && setJourneyVehicles(new Map(data.vehicles.flatMap((v) => (v.tripId ? [[v.tripId, v]] : [])))))
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, JOURNEY_VEHICLES_MS);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
+  }, [journeyTripIds]);
+
+  // Reis op de kaart tekenen; bij het kiezen van een optie erop inzoomen en de andere voertuigen vervagen.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    map.getSource<GeoJSONSource>("journey")?.setData(journeyGeo(activeJourney, from, to));
+    journeyTripsRef.current = activeJourney
+      ? new Set(activeJourney.legs.flatMap((l) => (l.type === "transit" ? [l.tripId] : [])))
+      : null;
+    render(progressAt(performance.now()));
+  }, [mapReady, activeJourney, from, to, render]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const points = activeJourney
+      ? journeyPoints(activeJourney)
+      : from && to
+        ? [endpointCoords(from), endpointCoords(to)]
+        : to
+          ? [endpointCoords(to)]
+          : [];
+    const bounds = boundsOf(points);
+    if (!bounds) return;
+    const pad = window.innerWidth < 640 ? { top: 190, bottom: 320, left: 40, right: 40 } : { top: 60, bottom: 60, left: 460, right: 60 };
+    map.fitBounds(bounds, { padding: pad, maxZoom: 16, duration: 900 });
+    // Alleen bij een andere reis of ander begin/eind opnieuw inzoomen, niet bij elke herplanning.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJourney, planKey]);
+
+  const showVehicle = useCallback((vehicle: ApiVehicle) => {
+    mapRef.current?.flyTo({ center: [vehicle.lng, vehicle.lat], zoom: Math.max(mapRef.current.getZoom(), 15), duration: 900 });
   }, []);
 
   // Vanuit het vertrekbord: het voertuig van die rit selecteren en ernaartoe gaan.
@@ -600,12 +756,50 @@ export function LiveMap() {
       <div ref={containerRef} className="h-full w-full" />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col gap-2 p-3 pr-14 sm:max-w-md sm:pr-3">
-        <SearchBox near={mapCenter} onSelectStop={selectStop} onSelectPlace={selectPlace} onClear={clearSearch} />
+        <PlannerPanel
+          from={from}
+          to={to}
+          time={planTime}
+          locationError={locationError}
+          near={mapCenter}
+          onFrom={chooseFrom}
+          onTo={chooseTo}
+          onUseMyLocation={requestMyLocation}
+          onSwap={swap}
+          onTime={setPlanTime}
+        />
         <StatusPill status={status} visibleCount={visibleCount} />
         <Legend counts={modeCounts} />
       </div>
 
-      {!selected && selectedStop && <StopSheet stop={selectedStop} onClose={() => setSelectedStop(null)} onShowTrip={showTrip} />}
+      {!selected && !selectedStop && to && (
+        <JourneySheet
+          journeys={journeys}
+          loading={!!from && !journeys && !planError}
+          error={!from ? (locationError ?? "Kies een vertrekpunt (of Mijn locatie).") : planError}
+          selected={selectedJourney}
+          vehicles={journeyVehicles}
+          onSelect={setSelectedJourney}
+          onShowVehicle={showVehicle}
+          onClose={closePlan}
+        />
+      )}
+
+      {!selected && selectedStop && (
+        <StopSheet
+          stop={selectedStop}
+          onClose={() => setSelectedStop(null)}
+          onShowTrip={showTrip}
+          onPlanTo={(stop) => {
+            setSelectedStop(null);
+            chooseTo({ kind: "stop", stop });
+          }}
+          onPlanFrom={(stop) => {
+            setSelectedStop(null);
+            chooseFrom({ kind: "stop", stop });
+          }}
+        />
+      )}
 
       {selected && (
         <VehicleSheet
