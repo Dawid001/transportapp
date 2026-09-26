@@ -74,6 +74,8 @@ export function LiveMap() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  // Telt op als "Mijn locatie" als vertrekpunt mislukt: dan gaat de cursor naar het Van-veld.
+  const [focusFrom, setFocusFrom] = useState(0);
   const [journeyVehicles, setJourneyVehicles] = useState<Map<string, ApiVehicle>>(new Map());
   // Rit-ID's van de gekozen reis: die voertuigen lichten op, de rest vervaagt.
   const journeyTripsRef = useRef<Set<string> | null>(null);
@@ -587,6 +589,7 @@ export function LiveMap() {
     setLocationError(null);
     if (!navigator.geolocation) {
       setLocationError("Je browser kan je locatie niet bepalen. Kies een vertrekpunt.");
+      if (target === "from") setFocusFrom((n) => n + 1);
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -595,7 +598,10 @@ export function LiveMap() {
         if (target === "from") setFrom(ep);
         else setTo(ep);
       },
-      () => setLocationError("Je locatie is niet beschikbaar (toestemming geweigerd?). Kies een vertrekpunt."),
+      () => {
+        setLocationError("Je locatie is niet beschikbaar (toestemming geweigerd?). Kies een vertrekpunt.");
+        if (target === "from") setFocusFrom((n) => n + 1);
+      },
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
     );
   }, []);
@@ -612,6 +618,7 @@ export function LiveMap() {
 
   const chooseFrom = useCallback((ep: PlanEndpoint | null) => {
     setFrom(ep);
+    if (ep) setLocationError(null);
     setSelectedJourney(null);
   }, []);
 
@@ -671,6 +678,8 @@ export function LiveMap() {
   }, [from, to, planTime, planKey]);
 
   const journeys = plan && plan.key === planKey ? plan.journeys : null;
+  // Ook zonder vertrekpunt naar de gekozen bestemming vliegen.
+  const toKey = to ? JSON.stringify(endpointParams("to", to)) : null;
   const activeJourney = selectedJourney !== null ? journeys?.[selectedJourney] : undefined;
 
   // Live voertuigen van alle ritten in de reisopties.
@@ -721,7 +730,7 @@ export function LiveMap() {
     map.fitBounds(bounds, { padding: pad, maxZoom: 16, duration: 900 });
     // Alleen bij een andere reis of ander begin/eind opnieuw inzoomen, niet bij elke herplanning.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedJourney, planKey]);
+  }, [selectedJourney, planKey, toKey]);
 
   const showVehicle = useCallback((vehicle: ApiVehicle) => {
     mapRef.current?.flyTo({ center: [vehicle.lng, vehicle.lat], zoom: Math.max(mapRef.current.getZoom(), 15), duration: 900 });
@@ -778,6 +787,7 @@ export function LiveMap() {
           to={to}
           time={planTime}
           locationError={locationError}
+          focusFrom={focusFrom}
           near={mapCenter}
           onFrom={chooseFrom}
           onTo={chooseTo}
@@ -786,7 +796,8 @@ export function LiveMap() {
           onTime={setPlanTime}
           onUseRoute={applyRoute}
         />
-        <StatusPill status={status} visibleCount={visibleCount} />
+        {/* Alleen tonen als er iets mis is (backend onbereikbaar), anders is de kaart zelf genoeg. */}
+        {status.state === "error" && <StatusPill status={status} visibleCount={visibleCount} />}
       </div>
 
       {!selected && !selectedStop && to && (

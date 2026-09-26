@@ -15,6 +15,8 @@ type Props = {
   placeholder: string;
   /** Tekst in het veld bij het (opnieuw) tonen, bv. de gekozen halte. Wijzig de `key` om te resetten. */
   initialText?: string;
+  /** Verandert deze waarde (en is die > 0), dan krijgt het veld de focus. */
+  focusToken?: number;
   /** "Mijn locatie" als eerste keuze aanbieden. */
   offerMyLocation?: boolean;
   /** Favoriete haltes en plaatsen, getoond zolang er nog niets getypt is. */
@@ -27,7 +29,7 @@ type Props = {
   onClear?: () => void;
 };
 
-export function SearchBox({ label, placeholder, initialText = "", offerMyLocation, favorites, near, onSelectStop, onSelectPlace, onSelectMyLocation, onClear }: Props) {
+export function SearchBox({ label, placeholder, initialText = "", focusToken, offerMyLocation, favorites, near, onSelectStop, onSelectPlace, onSelectMyLocation, onClear }: Props) {
   const [query, setQuery] = useState(initialText);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [open, setOpen] = useState(false);
@@ -35,6 +37,10 @@ export function SearchBox({ label, placeholder, initialText = "", offerMyLocatio
   const [loading, setLoading] = useState(false);
   const listId = useId();
   const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (focusToken) inputRef.current?.focus();
+  }, [focusToken]);
   // De gekozen naam staat in het vak; daar hoeven we niet opnieuw op te zoeken.
   const [chosen, setChosen] = useState<string | null>(initialText || null);
   const nearRef = useRef(near);
@@ -114,6 +120,7 @@ export function SearchBox({ label, placeholder, initialText = "", offerMyLocatio
           {label}
         </label>
         <input
+          ref={inputRef}
           id={inputId}
           value={query}
           onChange={(e) => {

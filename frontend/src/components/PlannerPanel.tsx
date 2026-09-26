@@ -26,6 +26,8 @@ type Props = {
   /** null = nu vertrekken. */
   time: number | null;
   locationError?: string | null;
+  /** Verandert als het Van-veld de focus moet krijgen (bv. locatie mislukt). */
+  focusFrom?: number;
   near: () => { lat: number; lng: number } | undefined;
   onFrom: (ep: PlanEndpoint | null) => void;
   onTo: (ep: PlanEndpoint | null) => void;
@@ -37,7 +39,7 @@ type Props = {
 };
 
 /** Bovenin: van waar naar waar, en wanneer. */
-export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo, onUseMyLocation, onSwap, onTime, onUseRoute }: Props) {
+export function PlannerPanel({ from, to, time, locationError, focusFrom, near, onFrom, onTo, onUseMyLocation, onSwap, onTime, onUseRoute }: Props) {
   const [later, setLater] = useState(time !== null);
   const { favorites } = useFavorites();
   const endpointFavs = favorites.filter((f): f is Extract<Favorite, { kind: "stop" | "place" }> => f.kind !== "route");
@@ -50,6 +52,7 @@ export function PlannerPanel({ from, to, time, locationError, near, onFrom, onTo
           key={`van-${endpointKey(from)}`}
           label="Van"
           placeholder="Vertrekpunt"
+          focusToken={from ? undefined : focusFrom}
           initialText={endpointName(from)}
           offerMyLocation
           favorites={endpointFavs}
