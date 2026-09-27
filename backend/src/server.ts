@@ -10,8 +10,8 @@ import { createAlerts } from "./alerts.js";
 import { buildContext, type AppContext } from "./context.js";
 import { startGtfsUpdater } from "./gtfsUpdater.js";
 import { createJourneyWatcher, type WatchLeg } from "./journeyWatch.js";
-import { createNsRealtime } from "./nsRealtime.js";
-import type { Journey, PlanPoint } from "./planner.js";
+import { createNsRealtime, type Crowd, type TrainRun } from "./nsRealtime.js";
+import type { Journey, PlanPoint, TransitLeg } from "./planner.js";
 import { searchPlaces } from "./places.js";
 import type { StopGroup } from "./stopIndex.js";
 import { tripStopTimes, vehicleDelay } from "./stopTimes.js";
@@ -167,6 +167,20 @@ function addLegAlerts(journeys: Journey[]) {
 }
 
 /** Treinstukken in reisadviezen aanvullen met NS-realtime: werkelijke tijden, spoor en uitval. */
+const CROWD_RANK: Record<Crowd, number> = { LOW: 1, MEDIUM: 2, HIGH: 3 };
+
+/** Drukte van het drukste stuk tussen in- en uitstappen, en het materieel bij het instappen. */
+function addCrowd(leg: TransitLeg, run: TrainRun) {
+  const fromCode = leg.from.stopId ? nsRealtime?.stationCode(leg.from.stopId) : undefined;
+  const toCode = leg.to.stopId ? nsRealtime?.stationCode(leg.to.stopId) : undefined;
+  const start = run.stops.findIndex((s) => s.code === fromCode);
+  if (start < 0) return;
+  const endAt = run.stops.findIndex((s, i) => i > start && s.code === toCode);
+  const part = run.stops.slice(start, endAt > start ? endAt : undefined);
+  for (const s of part) if (s.crowd && (!leg.crowd || CROWD_RANK[s.crowd] > CROWD_RANK[leg.crowd])) leg.crowd = s.crowd;
+  leg.stock = run.stops[start].stock;
+}
+
 async function enrichTrainLegs(journeys: Journey[]) {
   if (!nsRealtime) return;
   await Promise.all(
@@ -175,10 +189,12 @@ async function enrichTrainLegs(journeys: Journey[]) {
         if (leg.type !== "transit" || leg.mode !== "train") return;
         const nr = ctx.gtfs.lookup(leg.tripId)?.shortName;
         if (!nr) return;
-        const [deps, arrs] = await Promise.all([
+        const [deps, arrs, run] = await Promise.all([
           leg.from.stopId ? trainBoard([leg.from.stopId], "departures") : undefined,
           leg.to.stopId ? trainBoard([leg.to.stopId], "arrivals") : undefined,
+          nsRealtime!.run(nr, leg.departure),
         ]);
+        if (run) addCrowd(leg, run);
         const d = deps?.get(nr);
         if (d && Math.abs(d.planned - leg.departure) < 30 * 60) {
           leg.expectedDeparture = d.actual;

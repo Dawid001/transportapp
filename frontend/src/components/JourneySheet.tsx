@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ApiVehicle, Journey, Leg, PlanNotice, TransitLeg } from "@/lib/types";
+import type { ApiVehicle, Crowd, Journey, Leg, PlanNotice, TrainStock, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
 import { activeWatch, journeyKey, pushSupport, unwatchJourney, watchJourney, type ActiveWatch } from "@/lib/push";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
@@ -132,6 +132,7 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
   const leaveIn = Math.round((j.departure - now / 1000) / 60);
   const delay = firstTransit ? (firstTransit.expectedDeparture ? firstTransit.expectedDeparture - firstTransit.departure : vehicle?.delay) : undefined;
   const canceled = j.legs.some((l) => l.type === "transit" && l.canceled);
+  const crowd = worstCrowd(j);
   const alertCount = j.legs.reduce((n, l) => n + (l.type === "transit" ? (l.alerts?.length ?? 0) : 0), 0);
 
   return (
@@ -153,6 +154,7 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
         {j.legs.map((leg, i) => (
           <LegChip key={i} leg={leg} />
         ))}
+        {crowd && <CrowdMeter crowd={crowd} className="ml-auto" />}
       </div>
       <p className="mt-1.5 text-xs text-neutral-500">
         {canceled ? (
@@ -172,6 +174,49 @@ function JourneyOption({ journey: j, vehicles, now, onClick }: { journey: Journe
       </p>
     </button>
   );
+}
+
+const CROWD: Record<Crowd, { level: number; text: string; className: string }> = {
+  LOW: { level: 1, text: "Rustig", className: "text-emerald-600 dark:text-emerald-400" },
+  MEDIUM: { level: 2, text: "Gemiddeld druk", className: "text-amber-600 dark:text-amber-400" },
+  HIGH: { level: 3, text: "Druk", className: "text-red-600 dark:text-red-400" },
+};
+
+/** Drukste treinrit in de reis (alleen treinen hebben een NS-prognose). */
+function worstCrowd(j: Journey): Crowd | undefined {
+  let worst: Crowd | undefined;
+  for (const l of j.legs) if (l.type === "transit" && l.crowd && (!worst || CROWD[l.crowd].level > CROWD[worst].level)) worst = l.crowd;
+  return worst;
+}
+
+/** Drie poppetjes zoals bij NS: hoe meer gevuld, hoe drukker. */
+function CrowdMeter({ crowd, withText, className = "" }: { crowd: Crowd; withText?: boolean; className?: string }) {
+  const c = CROWD[crowd];
+  return (
+    <span className={`inline-flex items-center gap-1 ${c.className} ${className}`} title={`Verwachte drukte: ${c.text.toLowerCase()}`}>
+      <span aria-hidden className="inline-flex">
+        {[1, 2, 3].map((n) => (
+          <svg key={n} viewBox="0 0 10 14" className={`h-3.5 w-2.5 fill-current ${n > c.level ? "opacity-25" : ""}`}>
+            <circle cx="5" cy="3" r="2.5" />
+            <path d="M1 13V9a4 4 0 0 1 8 0v4Z" />
+          </svg>
+        ))}
+      </span>
+      <span className={withText ? "font-medium" : "sr-only"}>{c.text}</span>
+    </span>
+  );
+}
+
+const FACILITIES: Record<string, string> = { WIFI: "wifi", STILTE: "stiltecoupé", STROOM: "stopcontacten", TOILET: "toilet", FIETS: "fietsen", TOEGANKELIJK: "toegankelijk" };
+
+/** Bv. "VIRM · 6 bakken · 567 zitplaatsen · wifi, stiltecoupé". */
+function stockText(s: TrainStock): string {
+  const parts = [s.type];
+  if (s.parts) parts.push(`${s.parts} bakken`);
+  if (s.seats) parts.push(`${s.seats} zitplaatsen`);
+  const f = s.facilities.map((x) => FACILITIES[x]).filter(Boolean);
+  if (f.length) parts.push(f.join(", "));
+  return parts.join(" · ");
 }
 
 function LegChip({ leg }: { leg: Leg }) {
@@ -243,6 +288,13 @@ function TransitStep({ leg, vehicle, now, onShowVehicle }: { leg: TransitLeg; ve
           {leg.agencyName ? ` · ${leg.agencyName}` : ""} · {leg.stopsBetween + 1} {leg.stopsBetween === 0 ? "halte" : "haltes"} ·{" "}
           {minutes(leg.arrival - leg.departure)} min
         </p>
+
+        {(leg.crowd || leg.stock) && (
+          <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-neutral-500">
+            {leg.crowd && <CrowdMeter crowd={leg.crowd} withText />}
+            {leg.stock && <span>{stockText(leg.stock)}</span>}
+          </p>
+        )}
 
         {leg.alerts && leg.alerts.length > 0 && (
           <div className="mt-1.5">

@@ -136,9 +136,12 @@ export function PlannerPanel({ from, to, time, arriveBy, wheelchair, onWheelchai
           aria-pressed={wheelchair}
           aria-label="Rolstoeltoegankelijk plannen"
           title="Rolstoeltoegankelijk plannen"
-          className={`ml-auto shrink-0 rounded-md px-2 py-1 text-base leading-none ${wheelchair ? "bg-blue-600 text-white" : "bg-neutral-100 text-neutral-500 hover:text-neutral-900 dark:bg-neutral-800 dark:hover:text-white"}`}
+          className={`ml-auto shrink-0 rounded-md p-1 ${wheelchair ? "bg-blue-600 text-white" : "bg-neutral-100 text-neutral-400 hover:text-neutral-900 dark:bg-neutral-800 dark:hover:text-white"}`}
         >
-          ♿
+          <svg aria-hidden viewBox="0 0 24 24" className="size-5 fill-current">
+            <circle cx="12" cy="4" r="2" />
+            <path d="M19 13v-2c-1.54.02-3.09-.75-4.07-1.83l-1.29-1.43c-.17-.19-.38-.34-.61-.45H13c-.35-.2-.75-.3-1.19-.26C10.76 7.11 10 8.04 10 9.09V15c0 1.1.9 2 2 2h5v5h2v-5.5c0-1.1-.9-2-2-2h-3v-3.45c1.29 1.07 3.25 1.94 5 1.95zm-6.17 5c-.41 1.16-1.52 2-2.83 2-1.66 0-3-1.34-3-3 0-1.31.84-2.41 2-2.83V12.1c-2.28.46-4 2.48-4 4.9 0 2.76 2.24 5 5 5 2.42 0 4.44-1.72 4.9-4h-2.07z" />
+          </svg>
         </button>
       </div>
       {locationError && <p className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{locationError}</p>}

@@ -18,6 +18,22 @@ export type TrainTime = {
   cancelled: boolean;
 };
 
+/** Verwachte drukte in de trein (NS-prognose). */
+export type Crowd = "LOW" | "MEDIUM" | "HIGH";
+/** Materieel: treintype, zitplaatsen, aantal bakken en voorzieningen (WIFI, TOILET, STILTE, FIETS, STROOM, …). */
+export type TrainStock = { type: string; seats?: number; parts?: number; facilities: string[] };
+/** Een treinrit volgens NS: per station (stationscode) de drukte en het materieel bij vertrek. */
+export type TrainRun = { stops: { code: string; crowd?: Crowd; stock?: TrainStock }[] };
+
+type NsStockJson = { trainType?: string; numberOfSeats?: number; numberOfParts?: number; trainParts?: { facilities?: string[] }[] };
+type NsJourneyStop = {
+  id: string;
+  status?: string;
+  departures?: { crowdForecast?: string }[];
+  actualStock?: NsStockJson;
+  plannedStock?: NsStockJson;
+};
+
 type NsStation = { code: string; UICCode: string; lat: number; lng: number; land: string; namen: { lang: string } };
 type NsJourney = {
   plannedDateTime: string;
@@ -58,6 +74,7 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
     return matched;
   }
   const cache = new Map<string, { at: number; data: Promise<Map<string, TrainTime>> }>();
+  const runCache = new Map<string, { at: number; data: Promise<TrainRun | null> }>();
 
   // Stations eenmalig ophalen en koppelen aan het dichtstbijzijnde treinstation in onze haltelijst.
   async function loadStations() {
@@ -93,6 +110,41 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
     return out;
   }
 
+  async function fetchRun(trainNumber: string, when: number): Promise<TrainRun | null> {
+    const at = encodeURIComponent(new Date(when * 1000).toISOString());
+    const res = await fetch(`${BASE}/v2/journey?train=${encodeURIComponent(trainNumber)}&dateTime=${at}`, { headers });
+    if (!res.ok) throw new Error(`NS journey ${trainNumber}: HTTP ${res.status}`);
+    const body = (await res.json()) as { payload?: { stops?: NsJourneyStop[] } };
+    const stops = (body.payload?.stops ?? [])
+      .filter((s) => s.status !== "PASSING")
+      .map((s) => {
+        const crowd = s.departures?.[0]?.crowdForecast;
+        const st = s.actualStock ?? s.plannedStock;
+        const facilities = [...new Set((st?.trainParts ?? []).flatMap((p) => p.facilities ?? []))];
+        return {
+          code: s.id.replace(/_[0-9]+$/, ""),
+          crowd: crowd === "LOW" || crowd === "MEDIUM" || crowd === "HIGH" ? (crowd as Crowd) : undefined,
+          stock: st?.trainType ? { type: st.trainType, seats: st.numberOfSeats, parts: st.numberOfParts, facilities } : undefined,
+        };
+      });
+    return stops.length ? { stops } : null;
+  }
+
+  /** Treinrit met drukte en materieel (2 min gecachet; null als NS de rit niet kent). */
+  function run(trainNumber: string, when: number): Promise<TrainRun | null> {
+    const key = `${trainNumber}:${new Date(when * 1000).toISOString().slice(0, 10)}`;
+    const hit = runCache.get(key);
+    if (hit && Date.now() - hit.at < 2 * CACHE_MS) return hit.data;
+    const data = fetchRun(trainNumber, when).catch((err) => {
+      console.error("[NS]", err instanceof Error ? err.message : err);
+      runCache.delete(key);
+      return null;
+    });
+    runCache.set(key, { at: Date.now(), data });
+    if (runCache.size > 500) runCache.delete(runCache.keys().next().value!);
+    return data;
+  }
+
   /** Vertrekken of aankomsten op een station, per treinnummer (leeg bij fouten). */
   function board(kind: "departures" | "arrivals", code: string): Promise<Map<string, TrainTime>> {
     const key = `${kind}:${code}`;
@@ -117,6 +169,7 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
     stationCode: (stopId: string) => codeByStop.get(stopId),
     departures: (code: string) => board("departures", code),
     arrivals: (code: string) => board("arrivals", code),
+    run,
   };
 }
 
