@@ -13,6 +13,8 @@ export type Motion = {
   speed?: number;
   t0?: number;
   corr: LngLat;
+  /** Rijrichting van de backend, voor als er geen pad is (stilstaand of onbekend). */
+  bearing?: number;
 };
 
 const M_LAT = 111_320;
@@ -21,7 +23,7 @@ const M_LNG = 111_320 * Math.cos((52 * Math.PI) / 180);
 const MAX_CORRECTION_DEG = 0.02;
 
 export function makeMotion(v: ApiVehicle): Motion {
-  const motion: Motion = { base: [v.lng, v.lat], corr: [0, 0] };
+  const motion: Motion = { base: [v.lng, v.lat], corr: [0, 0], bearing: v.bearing };
   if (v.path && v.path.length > 1 && v.speed && v.timestamp) {
     const cum = [0];
     for (let i = 1; i < v.path.length; i++) {
@@ -34,13 +36,22 @@ export function makeMotion(v: ApiVehicle): Motion {
   return motion;
 }
 
-/** Waar het voertuig volgens de voorspelling nu is (zonder correctie). `now` in serverklok-ms. */
-export function predicted(m: Motion, now: number): LngLat {
-  if (!m.path || !m.cum || !m.speed || m.t0 === undefined) return m.base;
+/** Stuk van het pad waar het voertuig op `now` rijdt: index i (segment i-1 → i) en afstand d. */
+function segmentAt(m: Motion, now: number): { i: number; d: number } | null {
+  if (!m.path || !m.cum || !m.speed || m.t0 === undefined) return null;
   const total = m.cum[m.cum.length - 1];
   const d = Math.min(Math.max((m.speed * (now - m.t0)) / 1000, 0), total);
   let i = 1;
-  while (i < m.cum.length - 1 && m.cum[i] < d) i++;
+  // Segmenten zonder lengte (dubbele punten) overslaan, anders is er geen richting.
+  while (i < m.cum.length - 1 && (m.cum[i] < d || m.cum[i] === m.cum[i - 1])) i++;
+  return { i, d };
+}
+
+/** Waar het voertuig volgens de voorspelling nu is (zonder correctie). `now` in serverklok-ms. */
+export function predicted(m: Motion, now: number): LngLat {
+  const at = segmentAt(m, now);
+  if (!at || !m.path || !m.cum) return m.base;
+  const { i, d } = at;
   const seg = m.cum[i] - m.cum[i - 1];
   const t = seg ? (d - m.cum[i - 1]) / seg : 0;
   const [a, b] = [m.path[i - 1], m.path[i]];
@@ -62,6 +73,17 @@ export function continueFrom(next: Motion, displayed: LngLat, now: number): Moti
   const corr: LngLat = [displayed[0] - lng, displayed[1] - lat];
   if (Math.abs(corr[0]) > MAX_CORRECTION_DEG || Math.abs(corr[1]) > MAX_CORRECTION_DEG) return next;
   return { ...next, corr };
+}
+
+/** Rijrichting in graden (0 = noord): het stuk route waar het voertuig nu rijdt, anders die van de backend. */
+export function headingAt(m: Motion, now: number): number | undefined {
+  const at = segmentAt(m, now);
+  if (!at || !m.path) return m.bearing;
+  const [a, b] = [m.path[at.i - 1], m.path[at.i]];
+  const dx = (b[0] - a[0]) * M_LNG;
+  const dy = (b[1] - a[1]) * M_LAT;
+  if (!dx && !dy) return m.bearing;
+  return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
 }
 
 export const isMoving = (m: Motion) => !!m.path;

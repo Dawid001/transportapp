@@ -1,4 +1,5 @@
 import type { openGtfs } from "./gtfs/lookup.js";
+import { createBearingTracker } from "./bearing.js";
 import { createMotionEstimator } from "./motion.js";
 import { fetchNsTrains, NsRateLimitError, trainLabel } from "./ns.js";
 import { serviceDate } from "./time.js";
@@ -18,6 +19,7 @@ export function startNsPoller(getGtfs: () => Gtfs, apiKey: string) {
   // Bij een nieuwe dienstregeling (andere gtfs) een nieuwe estimator, anders verwijst hij naar de oude database.
   let motionFor: Gtfs | null = null;
   let motion: ReturnType<typeof createMotionEstimator> | null = null;
+  const trainBearing = createBearingTracker();
   let state: NsState = null;
   let lastError: string | null = null;
 
@@ -63,7 +65,11 @@ export function startNsPoller(getGtfs: () => Gtfs, apiKey: string) {
         vehicles.map((v) => ({ ...v, measuredSpeed: v.speed })),
         nowSec,
       );
-      for (const v of vehicles) v.path = motions.get(v.id)?.path;
+      for (const [i, v] of vehicles.entries()) {
+        v.path = motions.get(v.id)?.path;
+        // NS geeft zelf de rijrichting; bij stilstand is die niet betrouwbaar, dan de laatst bekende.
+        v.bearing = trainBearing(v.id, v.lat, v.lng, { path: v.path, hint: trains[i].speedKmh > 3 ? trains[i].bearing : undefined });
+      }
 
       // De NS API geeft soms een onvolledig antwoord (gezien: 13 i.p.v. ~195 treinen). Bij zo'n plotselinge
       // daling de vorige (hooguit 3 min oude) lijst houden, anders verdwijnen treinen even van de kaart.

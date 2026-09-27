@@ -8,7 +8,7 @@ import { boundsOf, tripRouteGeo } from "@/lib/routeGeo";
 import { endpointCoords, endpointParams, journeyGeo, journeyPoints } from "@/lib/journeyGeo";
 import { registerServiceWorker } from "@/lib/push";
 import { toSaved, useFavorites, type Favorite, type SavedEndpoint } from "@/lib/favorites";
-import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
+import { continueFrom, headingAt, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
 import { JourneySheet } from "./JourneySheet";
 import { PlannerPanel } from "./PlannerPanel";
@@ -46,6 +46,34 @@ const MODE_COLOR: ExpressionSpecification = [
   MODE_COLORS.other,
 ];
 const PASSED_COLOR = "#9ca3af";
+
+/**
+ * Pijlpunt voor de rijrichting als SDF-plaatje (64×64, punt naar boven), zodat MapLibre het in elke kleur
+ * en met een witte rand kan tekenen. Het midden van het plaatje ligt op het voertuig; de punt steekt uit.
+ */
+function arrowImage(): { width: number; height: number; data: Uint8Array } {
+  const size = 64;
+  const tri: [number, number][] = [[32, 2], [44, 24], [20, 24]];
+  const data = new Uint8Array(size * size * 4);
+  const segDist = (px: number, py: number, [ax, ay]: [number, number], [bx, by]: [number, number]) => {
+    const t = Math.max(0, Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2)));
+    return Math.hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay)));
+  };
+  const side = (px: number, py: number, [ax, ay]: [number, number], [bx, by]: [number, number]) => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const px = x + 0.5;
+      const py = y + 0.5;
+      const d = Math.min(...tri.map((a, i) => segDist(px, py, a, tri[(i + 1) % 3])));
+      const s = tri.map((a, i) => side(px, py, a, tri[(i + 1) % 3]));
+      const inside = s.every((v) => v >= 0) || s.every((v) => v <= 0);
+      // Zoals TinySDF: rand op 0,75, 8 pixels bereik.
+      const value = Math.round(191.25 - 31.875 * (inside ? -d : d));
+      data[(y * size + x) * 4 + 3] = Math.max(0, Math.min(255, value));
+    }
+  }
+  return { width: size, height: size, data };
+}
 
 export function LiveMap() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -115,6 +143,7 @@ export function LiveMap() {
     for (const v of vehiclesRef.current.values()) {
       counts[v.mode] = (counts[v.mode] ?? 0) + 1;
       const motion = motionRef.current.get(v.id);
+      const heading = motion ? headingAt(motion, now) : v.bearing;
       features.push({
         type: "Feature",
         geometry: { type: "Point", coordinates: motion ? positionAt(motion, now, t) : [v.lng, v.lat] },
@@ -126,6 +155,8 @@ export function LiveMap() {
           mine: !!v.tripId && !!journeyTripsRef.current?.has(v.tripId),
           dim: !!journeyTripsRef.current && !(v.tripId && journeyTripsRef.current.has(v.tripId)),
           stale: v.timestamp ? nowSec - v.timestamp > STALE_AFTER_SECONDS : false,
+          // -1 = richting onbekend: dan geen pijltje.
+          bearing: heading ?? -1,
         },
       });
     }
@@ -465,6 +496,37 @@ export function LiveMap() {
             "circle-color": ["match", ["get", "kind"], "from", "#2563eb", "to", "#ef4444", dark ? "#171717" : "#ffffff"],
             "circle-stroke-color": ["match", ["get", "kind"], "stop", MODE_COLOR, "#ffffff"],
             "circle-stroke-width": 3,
+          },
+        });
+
+        // Rijrichting: een puntje in de kleur van het voertuig dat uit het bolletje steekt.
+        if (!m.hasImage("vehicle-arrow")) m.addImage("vehicle-arrow", arrowImage(), { sdf: true, pixelRatio: 2 });
+        m.addLayer({
+          id: "vehicle-arrows",
+          type: "symbol",
+          source: "vehicles",
+          minzoom: 9,
+          filter: [">=", ["get", "bearing"], 0],
+          layout: {
+            "icon-image": "vehicle-arrow",
+            "icon-rotate": ["get", "bearing"],
+            "icon-rotation-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            // Meegroeien met het bolletje (zie circle-radius hieronder), zodat alleen de punt uitsteekt.
+            "icon-size": [
+              "interpolate", ["linear"], ["zoom"],
+              9, ["case", ["get", "selected"], 0.65, 0.5],
+              10, ["case", ["get", "selected"], 1, 0.65],
+              12, ["case", ["get", "selected"], 1.7, 1.45],
+              16, ["case", ["get", "selected"], 1.9, 1.65],
+            ],
+          },
+          paint: {
+            "icon-color": MODE_COLOR,
+            "icon-halo-color": "#ffffff",
+            "icon-halo-width": 1,
+            "icon-opacity": ["case", ["get", "dim"], 0.2, ["get", "stale"], 0.35, 1],
           },
         });
 

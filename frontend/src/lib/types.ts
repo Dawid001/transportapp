@@ -27,6 +27,8 @@ export type ApiVehicle = {
   path?: [number, number][];
   /** Vertraging in seconden bij de huidige/volgende halte (negatief = te vroeg). */
   delay?: number;
+  /** Rijrichting in graden (0 = noord), als bekend. */
+  bearing?: number;
 };
 
 export type VehiclesResponse = {

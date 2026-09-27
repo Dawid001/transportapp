@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
+import { createBearingTracker } from "./bearing.js";
 import { fetchVehicles, RateLimitError } from "./fetchVehicles.js";
 import type { Mode } from "./gtfs/lookup.js";
 import { cleanupOldVersions, currentDbPath, DATA_DIR } from "./gtfs/paths.js";
@@ -59,12 +60,16 @@ export type ApiVehicle = {
   path?: [number, number][];
   /** Vertraging in seconden bij de huidige/volgende halte (uit tripUpdates; negatief = te vroeg). */
   delay?: number;
+  /** Rijrichting in graden (0 = noord), als bekend. */
+  bearing?: number;
 };
 
 const nsKey = process.env.NS_API_KEY?.trim();
 // De poller vraagt de dienstregeling telkens via ctx op, zodat hij een wissel naar een nieuwe versie volgt.
 const ns = nsKey && !nsKey.startsWith("plak-hier") ? startNsPoller(() => ctx.gtfs, nsKey) : null;
 if (!ns) console.log("Geen NS_API_KEY in backend/.env: NS-treinen staan uit.");
+
+const busBearing = createBearingTracker();
 
 type Cache = { updatedAt: number; feedTimestamp: number; etag?: string; vehicles: ApiVehicle[] };
 
@@ -344,12 +349,14 @@ async function poll(): Promise<number> {
       };
     });
     const { motions, stats } = ctx.motion.update(enriched, Date.now() / 1000);
+    const feedBearing = new Map(vehicles.map((v) => [v.id, v.bearing]));
     for (const v of enriched) {
       const m = motions.get(v.id);
       if (m) {
         v.speed = m.speed;
         v.path = m.path;
       }
+      v.bearing = busBearing(v.id, v.lat, v.lng, { path: v.path, hint: feedBearing.get(v.id) });
     }
     cache = { updatedAt: Date.now(), feedTimestamp, etag: feed.etag, vehicles: enriched };
     etag = feed.etag;
