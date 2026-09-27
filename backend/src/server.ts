@@ -10,6 +10,7 @@ import { createAlerts } from "./alerts.js";
 import { buildContext, type AppContext } from "./context.js";
 import { startGtfsUpdater } from "./gtfsUpdater.js";
 import { createJourneyWatcher, type WatchLeg } from "./journeyWatch.js";
+import { cleanJourney, createShareStore } from "./shares.js";
 import { createNsRealtime, type Crowd, type TrainRun } from "./nsRealtime.js";
 import type { Journey, PlanPoint, TransitLeg } from "./planner.js";
 import { searchPlaces } from "./places.js";
@@ -213,6 +214,8 @@ async function enrichTrainLegs(journeys: Journey[]) {
 
 // "Houd me op de hoogte": gevolgde reizen + pushmeldingen. Realtime per reisdeel: NS voor treinen,
 // anders de verwachte tijden van OVapi (met doorgeschoven vertraging als een halte geen update heeft).
+const shares = createShareStore();
+
 const watcher = createJourneyWatcher(async (leg) => {
   if (leg.mode === "train") {
     const nr = ctx.gtfs.lookup(leg.tripId)?.shortName;
@@ -239,12 +242,12 @@ const watcher = createJourneyWatcher(async (leg) => {
 });
 
 /** JSON-body van een POST lezen (max 64 KB). */
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage, maxBytes = 64 * 1024): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 64 * 1024) throw new Error("Body te groot");
+    if (size > maxBytes) throw new Error("Body te groot");
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -417,6 +420,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname.startsWith("/api/push/") || url.pathname.startsWith("/api/watch")) {
     if (await handlePush(req, res, url)) return;
   }
+  // Reis delen: de reis bewaren onder een willekeurige code, voor een link als /?reis=<code>.
+  if (url.pathname === "/api/share" && req.method === "POST") {
+    const journey = cleanJourney(await readJson(req, 1024 * 1024).catch(() => null));
+    if (!journey) return sendJson(res, 400, { error: "Ongeldige reis" });
+    if (journey.arrival < Date.now() / 1000) return sendJson(res, 400, { error: "Deze reis is al voorbij" });
+    return sendJson(res, 200, { id: shares.create(journey) });
+  }
   if (req.method !== "GET") return sendJson(res, 405, { error: "Alleen GET" });
 
   if (url.pathname === "/api/health") {
@@ -542,6 +552,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
           ? { kind: "noServiceUntil" as const, firstDeparture: firstTransit }
           : undefined;
     return sendJson(res, 200, { from, to, time: at, arriveBy, wheelchair: options.wheelchair, journeys, notice });
+  }
+
+  const shareMatch = url.pathname.match(/^\/api\/share\/([\w-]{6,40})$/);
+  if (shareMatch) {
+    const journey = shares.get(shareMatch[1]);
+    if (!journey) return sendJson(res, 404, { error: "Deze gedeelde reis bestaat niet (meer)" });
+    // Actuele treintijden, drukte en meldingen, net als bij plannen.
+    await enrichTrainLegs([journey]);
+    addLegAlerts([journey]);
+    return sendJson(res, 200, { journey });
   }
 
   if (url.pathname === "/api/stops") {

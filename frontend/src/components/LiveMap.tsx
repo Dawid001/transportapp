@@ -77,6 +77,8 @@ export function LiveMap() {
   const [plan, setPlan] = useState<{ key: string; journeys: Journey[]; notice?: PlanNotice } | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
+  // Reis die iemand via een link (/?reis=<code>) met je deelt.
+  const [shared, setShared] = useState<{ id: string; journey: Journey | null; error?: string } | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   // Telt op als "Mijn locatie" als vertrekpunt mislukt: dan gaat de cursor naar het Van-veld.
   const [focusFrom, setFocusFrom] = useState(0);
@@ -688,10 +690,40 @@ export function LiveMap() {
     };
   }, [from, to, planTime, planArriveBy, wheelchair, planKey]);
 
-  const journeys = plan && plan.key === planKey ? plan.journeys : null;
+  // Gedeelde reis uit de link laden, en elke minuut opnieuw (actuele treintijden en meldingen).
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("reis");
+    if (!id) return;
+    let stopped = false;
+    const load = () =>
+      fetch(`/api/share/${encodeURIComponent(id)}`)
+        .then((res) => (res.ok ? (res.json() as Promise<{ journey: Journey }>) : Promise.reject(new Error(String(res.status)))))
+        .then((data) => !stopped && setShared({ id, journey: data.journey }))
+        .catch((err: Error) => {
+          if (stopped) return;
+          const error = err.message === "404" ? "Deze gedeelde reis bestaat niet (meer)." : "De gedeelde reis kon niet geladen worden.";
+          setShared((s) => (s?.journey ? s : { id, journey: null, error }));
+        });
+    void load();
+    const timer = setInterval(load, REPLAN_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const closeShared = useCallback(() => {
+    setShared(null);
+    window.history.replaceState(null, "", "/");
+  }, []);
+
+  // Zelf een bestemming kiezen gaat voor een gedeelde reis.
+  const showShared = !!shared && !to;
+  const journeys = showShared ? (shared.journey ? [shared.journey] : null) : plan && plan.key === planKey ? plan.journeys : null;
   // Ook zonder vertrekpunt naar de gekozen bestemming vliegen.
   const toKey = to ? JSON.stringify(endpointParams("to", to)) : null;
-  const activeJourney = selectedJourney !== null ? journeys?.[selectedJourney] : undefined;
+  const activeJourney = showShared ? (shared.journey ?? undefined) : selectedJourney !== null ? journeys?.[selectedJourney] : undefined;
+  const sharedLoaded = showShared && !!shared.journey;
 
   // Live voertuigen van alle ritten in de reisopties.
   const journeyTripIds = [...new Set((journeys ?? []).flatMap((j) => j.legs.flatMap((l) => (l.type === "transit" ? [l.tripId] : []))))].join(",");
@@ -718,12 +750,12 @@ export function LiveMap() {
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    map.getSource<GeoJSONSource>("journey")?.setData(journeyGeo(activeJourney, from, to));
+    map.getSource<GeoJSONSource>("journey")?.setData(journeyGeo(activeJourney, showShared ? null : from, showShared ? null : to));
     journeyTripsRef.current = activeJourney
       ? new Set(activeJourney.legs.flatMap((l) => (l.type === "transit" ? [l.tripId] : [])))
       : null;
     render(progressAt(performance.now()));
-  }, [mapReady, activeJourney, from, to, render]);
+  }, [mapReady, activeJourney, from, to, showShared, render]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -741,7 +773,7 @@ export function LiveMap() {
     map.fitBounds(bounds, { padding: pad, maxZoom: 16, duration: 900 });
     // Alleen bij een andere reis of ander begin/eind opnieuw inzoomen, niet bij elke herplanning.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedJourney, planKey, toKey]);
+  }, [selectedJourney, planKey, toKey, sharedLoaded, mapReady]);
 
   const showVehicle = useCallback((vehicle: ApiVehicle) => {
     mapRef.current?.flyTo({ center: [vehicle.lng, vehicle.lat], zoom: Math.max(mapRef.current.getZoom(), 15), duration: 900 });
@@ -816,6 +848,22 @@ export function LiveMap() {
         {/* Alleen tonen als er iets mis is (backend onbereikbaar), anders is de kaart zelf genoeg. */}
         {status.state === "error" && <StatusPill status={status} visibleCount={visibleCount} />}
       </div>
+
+      {!selected && !selectedStop && showShared && (
+        <JourneySheet
+          shared
+          journeys={journeys}
+          loading={!shared.journey && !shared.error}
+          error={shared.error ?? null}
+          selected={0}
+          vehicles={journeyVehicles}
+          onSelect={() => {}}
+          onShowVehicle={showVehicle}
+          onClose={closeShared}
+          routeSaved={false}
+          onToggleRoute={() => {}}
+        />
+      )}
 
       {!selected && !selectedStop && to && (
         <JourneySheet

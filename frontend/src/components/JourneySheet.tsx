@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { ApiVehicle, Crowd, Journey, Leg, PlanNotice, TrainStock, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
+import { shareJourney } from "@/lib/share";
 import { activeWatch, journeyKey, pushSupport, unwatchJourney, watchJourney, type ActiveWatch } from "@/lib/push";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
@@ -12,6 +13,8 @@ type Props = {
   notice?: PlanNotice;
   /** Gepland via rolstoeltoegankelijke haltes. */
   wheelchair?: boolean;
+  /** Een reis die iemand via een link met je deelt: geen opties, alleen deze reis live. */
+  shared?: boolean;
   loading: boolean;
   error: string | null;
   selected: number | null;
@@ -37,7 +40,7 @@ function expectedDeparture(leg: TransitLeg, vehicle?: ApiVehicle): number {
 }
 
 /** Onderin: reisopties, en na het kiezen de reis stap voor stap met live status. */
-export function JourneySheet({ journeys, notice, wheelchair, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
+export function JourneySheet({ journeys, notice, wheelchair, shared, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
@@ -50,7 +53,9 @@ export function JourneySheet({ journeys, notice, wheelchair, loading, error, sel
     <div className="absolute inset-x-0 bottom-0 p-3 pb-9 sm:left-3 sm:right-auto sm:w-[26rem] sm:pb-3">
       <section className="flex max-h-[55dvh] flex-col rounded-2xl bg-white shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10">
         <header className="flex items-center gap-2 px-4 pt-3 pb-2">
-          {journey ? (
+          {shared ? (
+            <h2 className="text-sm font-semibold">📍 Gedeelde reis</h2>
+          ) : journey ? (
             <button onClick={() => onSelect(null)} className="-ml-1 rounded-md px-1.5 py-0.5 text-sm font-medium text-blue-600 hover:bg-neutral-100 dark:text-blue-400 dark:hover:bg-neutral-800">
               ← Opties
             </button>
@@ -58,13 +63,15 @@ export function JourneySheet({ journeys, notice, wheelchair, loading, error, sel
             <h2 className="text-sm font-semibold">Reisopties</h2>
           )}
           <span className="flex-1" />
-          <button
-            onClick={onToggleRoute}
-            aria-pressed={routeSaved}
-            className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 ${routeSaved ? "text-amber-500" : "text-neutral-500"}`}
-          >
-            {routeSaved ? "★ Bewaard" : "☆ Bewaar route"}
-          </button>
+          {!shared && (
+            <button
+              onClick={onToggleRoute}
+              aria-pressed={routeSaved}
+              className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 ${routeSaved ? "text-amber-500" : "text-neutral-500"}`}
+            >
+              {routeSaved ? "★ Bewaard" : "☆ Bewaar route"}
+            </button>
+          )}
           <button
             onClick={onClose}
             aria-label="Sluiten"
@@ -78,7 +85,7 @@ export function JourneySheet({ journeys, notice, wheelchair, loading, error, sel
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {journey ? (
-            <JourneyDetail journey={journey} vehicles={vehicles} now={now} onShowVehicle={onShowVehicle} />
+            <JourneyDetail journey={journey} shared={shared} vehicles={vehicles} now={now} onShowVehicle={onShowVehicle} />
           ) : loading && !journeys ? (
             <p className="px-2 py-3 text-sm text-neutral-500">Reis plannen…</p>
           ) : error ? (
@@ -230,7 +237,7 @@ function LegChip({ leg }: { leg: Leg }) {
   );
 }
 
-function JourneyDetail({ journey: j, vehicles, now, onShowVehicle }: { journey: Journey; vehicles: Map<string, ApiVehicle>; now: number; onShowVehicle: (v: ApiVehicle) => void }) {
+function JourneyDetail({ journey: j, shared, vehicles, now, onShowVehicle }: { journey: Journey; shared?: boolean; vehicles: Map<string, ApiVehicle>; now: number; onShowVehicle: (v: ApiVehicle) => void }) {
   return (
     <div className="px-2">
       <p className="mb-2 text-base font-semibold tabular-nums">
@@ -240,7 +247,15 @@ function JourneyDetail({ journey: j, vehicles, now, onShowVehicle }: { journey: 
           {durationText(j.arrival - j.departure)} · {j.transfers === 0 ? "direct" : `${j.transfers}× overstappen`}
         </span>
       </p>
-      <NotifyButton journey={j} />
+      {shared && (
+        <p className="mb-2 text-sm text-neutral-600 dark:text-neutral-300">
+          Iemand deelt deze reis naar <span className="font-medium">{j.legs[j.legs.length - 1].to.name}</span> met je. Je ziet hier live waar de bus of trein is.
+        </p>
+      )}
+      <div className="mb-3 flex gap-2">
+        <NotifyButton journey={j} />
+        {!shared && <ShareButton journey={j} />}
+      </div>
       <ol className="space-y-2">
         {j.legs.map((leg, i) =>
           leg.type === "walk" ? (
@@ -359,6 +374,31 @@ const SUPPORT_TEXT: Record<Exclude<ReturnType<typeof pushSupport>, "ok">, string
   denied: "Meldingen staan uit voor deze site. Zet ze aan in de instellingen van je browser.",
 };
 
+/** Link naar deze reis, zodat iemand anders live kan meekijken. */
+function ShareButton({ journey }: { journey: Journey }) {
+  const [state, setState] = useState<"idle" | "busy" | "copied" | "error">("idle");
+  async function share() {
+    setState("busy");
+    try {
+      const result = await shareJourney(journey);
+      setState(result === "copied" ? "copied" : "idle");
+      if (result === "copied") setTimeout(() => setState("idle"), 2500);
+    } catch {
+      setState("error");
+    }
+  }
+  return (
+    <button
+      onClick={share}
+      disabled={state === "busy"}
+      title="Deel een link waarmee iemand je reis live kan volgen"
+      className="shrink-0 self-start rounded-xl bg-neutral-100 px-3 py-2 text-sm font-medium hover:bg-neutral-200 disabled:opacity-60 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+    >
+      {state === "copied" ? "✓ Link gekopieerd" : state === "error" ? "Delen mislukt" : "↗ Deel reis"}
+    </button>
+  );
+}
+
 /** "Houd me op de hoogte": de backend stuurt meldingen voor deze reis, ook als de app dicht is. */
 function NotifyButton({ journey }: { journey: Journey }) {
   const [support] = useState(() => pushSupport());
@@ -368,7 +408,7 @@ function NotifyButton({ journey }: { journey: Journey }) {
   const following = watch?.key === journeyKey(journey);
 
   if (support !== "ok") {
-    return <p className="mb-2 rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">🔔 {SUPPORT_TEXT[support]}</p>;
+    return <p className="min-w-0 flex-1 rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">🔔 {SUPPORT_TEXT[support]}</p>;
   }
 
   async function toggle() {
@@ -389,7 +429,7 @@ function NotifyButton({ journey }: { journey: Journey }) {
   }
 
   return (
-    <div className="mb-3">
+    <div className="min-w-0 flex-1">
       <button
         onClick={toggle}
         disabled={busy}
