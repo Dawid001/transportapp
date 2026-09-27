@@ -3,11 +3,15 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Place, SearchResponse, StopSummary } from "@/lib/types";
 import { MODE_COLORS, MODE_LABELS } from "@/lib/format";
+import { addRecent, recentKey, useRecents } from "@/lib/recent";
 
 const PLACE_LABELS: Record<Place["type"], string> = { woonplaats: "Plaats", weg: "Straat", adres: "Adres", postcode: "Postcode" };
 const DEBOUNCE_MS = 200;
 
-type Result = { kind: "location" } | { kind: "stop"; stop: StopSummary; fav?: boolean } | { kind: "place"; place: Place; fav?: boolean };
+/** group: onder welk kopje een keuze staat zolang er nog niets getypt is. */
+type Group = "recent" | "fav";
+type Result = { kind: "location" } | { kind: "stop"; stop: StopSummary; group?: Group } | { kind: "place"; place: Place; group?: Group };
+const GROUP_LABELS: Record<Group, string> = { recent: "Recent", fav: "Favorieten" };
 
 type Props = {
   /** Korte naam voor het veld, bv. "Van" of "Naar". */
@@ -77,10 +81,14 @@ export function SearchBox({ label, placeholder, initialText = "", focusToken, of
     };
   }, [query, chosen]);
 
+  const recents = useRecents();
   const typed = query.trim().length >= 2 && query !== chosen;
+  // Recent gekozen, zonder wat al bij de favorieten staat.
+  const favKeys = new Set((favorites ?? []).map(recentKey));
   const items: Result[] = [
     ...(offerMyLocation && !typed ? [{ kind: "location" as const }] : []),
-    ...(!typed ? (favorites ?? []).map((f) => ({ ...f, fav: true })) : []),
+    ...(!typed ? recents.filter((r) => !favKeys.has(recentKey(r))).map((r) => ({ ...r, group: "recent" as const })) : []),
+    ...(!typed ? (favorites ?? []).map((f) => ({ ...f, group: "fav" as const })) : []),
     ...(typed && results
       ? [...results.stops.map((stop) => ({ kind: "stop" as const, stop })), ...results.places.map((place) => ({ kind: "place" as const, place }))]
       : []),
@@ -95,10 +103,12 @@ export function SearchBox({ label, placeholder, initialText = "", focusToken, of
     } else if (item.kind === "stop") {
       setChosen(item.stop.name);
       setQuery(item.stop.name);
+      addRecent({ kind: "stop", stop: item.stop });
       onSelectStop(item.stop);
     } else {
       setChosen(item.place.name);
       setQuery(item.place.name);
+      addRecent({ kind: "place", place: item.place });
       onSelectPlace(item.place);
     }
   }
@@ -171,19 +181,19 @@ export function SearchBox({ label, placeholder, initialText = "", focusToken, of
         >
           {items.map((item, i) => {
             const prev = items[i - 1];
-            const isFav = item.kind !== "location" && !!item.fav;
-            const prevFav = !!prev && prev.kind !== "location" && !!prev.fav;
-            const heading = isFav
-              ? prevFav
+            const group = item.kind !== "location" ? item.group : undefined;
+            const prevGroup = prev && prev.kind !== "location" ? prev.group : undefined;
+            const heading = group
+              ? group === prevGroup
                 ? null
-                : "Favorieten"
+                : GROUP_LABELS[group]
               : item.kind === "stop" && prev?.kind !== "stop"
                 ? "Haltes"
                 : item.kind === "place" && prev?.kind !== "place"
                   ? "Plaatsen"
                   : null;
             return (
-              <li key={item.kind === "location" ? "loc" : item.kind === "stop" ? `s-${item.stop.id}` : `p-${item.place.id}`} role="presentation">
+              <li key={item.kind === "location" ? "loc" : `${item.group ?? "r"}-${recentKey(item)}`} role="presentation">
                 {heading && <p className="px-4 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">{heading}</p>}
                 <button
                   type="button"
@@ -194,7 +204,7 @@ export function SearchBox({ label, placeholder, initialText = "", focusToken, of
                   onClick={() => choose(item)}
                   className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${i === active ? "bg-neutral-100 dark:bg-neutral-800" : ""}`}
                 >
-                  {item.kind === "location" ? <LocationIcon /> : item.kind === "stop" ? <StopIcon stop={item.stop} /> : <PinIcon />}
+                  {item.kind === "location" ? <LocationIcon /> : item.group === "recent" ? <ClockIcon /> : item.kind === "stop" ? <StopIcon stop={item.stop} /> : <PinIcon />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">
                       {item.kind === "location" ? "Mijn locatie" : item.kind === "stop" ? item.stop.name : item.place.name}
@@ -222,6 +232,16 @@ function StopIcon({ stop }: { stop: StopSummary }) {
   return (
     <span className="flex size-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ backgroundColor: color }}>
       {stop.modes[0] === "train" ? "NS" : "H"}
+    </span>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-neutral-100 text-neutral-500 dark:bg-neutral-800">
+      <svg aria-hidden viewBox="0 0 20 20" className="size-4 fill-current">
+        <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm-.75 2.75a.75.75 0 0 1 1.5 0v3.44l2.28 2.28a.75.75 0 1 1-1.06 1.06l-2.5-2.5a.75.75 0 0 1-.22-.53V6.25Z" />
+      </svg>
     </span>
   );
 }
