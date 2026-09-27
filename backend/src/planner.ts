@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Alert } from "./alerts.js";
 import type { Mode, TripInfo } from "./gtfs/lookup.js";
-import type { Crowd, TrainStock } from "./nsRealtime.js";
+import type { Crowd } from "./nsRealtime.js";
 import { serviceDayStart } from "./time.js";
 import type { Timetable } from "./timetable.js";
 
@@ -47,9 +47,8 @@ export type TransitLeg = {
   expectedDeparture?: number;
   expectedArrival?: number;
   canceled?: boolean;
-  /** Treinen: verwachte drukte (drukste stuk van je rit) en het materieel, volgens NS. */
+  /** Treinen: verwachte drukte (drukste stuk van je rit), volgens NS. */
   crowd?: Crowd;
-  stock?: TrainStock;
   /** Aantal haltes onderweg (tussen in- en uitstappen). */
   stopsBetween: number;
   /** Volgnummers (stop_sequence) van in- en uitstaphalte, om de live positie van het voertuig te duiden. */

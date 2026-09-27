@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ApiVehicle, Crowd, Journey, Leg, PlanNotice, TrainStock, TransitLeg } from "@/lib/types";
+import type { ApiVehicle, Crowd, Journey, Leg, PlanNotice, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
 import { activeWatch, journeyKey, pushSupport, unwatchJourney, watchJourney, type ActiveWatch } from "@/lib/push";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
@@ -213,18 +213,6 @@ function CrowdMeter({ crowd, withText, className = "" }: { crowd: Crowd; withTex
   );
 }
 
-const FACILITIES: Record<string, string> = { WIFI: "wifi", STILTE: "stiltecoupé", STROOM: "stopcontacten", TOILET: "toilet", FIETS: "fietsen", TOEGANKELIJK: "toegankelijk" };
-
-/** Bv. "VIRM · 6 bakken · 567 zitplaatsen · wifi, stiltecoupé". */
-function stockText(s: TrainStock): string {
-  const parts = [s.type];
-  if (s.parts) parts.push(`${s.parts} bakken`);
-  if (s.seats) parts.push(`${s.seats} zitplaatsen`);
-  const f = s.facilities.map((x) => FACILITIES[x]).filter(Boolean);
-  if (f.length) parts.push(f.join(", "));
-  return parts.join(" · ");
-}
-
 function LegChip({ leg }: { leg: Leg }) {
   if (leg.type === "walk") {
     return <span className="rounded-md bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">🚶 {minutes(leg.arrival - leg.departure)}</span>;
@@ -302,10 +290,9 @@ function TransitStep({ leg, vehicle, now, onShowVehicle }: { leg: TransitLeg; ve
           {minutes(leg.arrival - leg.departure)} min
         </p>
 
-        {(leg.crowd || leg.stock) && (
-          <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-neutral-500">
-            {leg.crowd && <CrowdMeter crowd={leg.crowd} withText />}
-            {leg.stock && <span>{stockText(leg.stock)}</span>}
+        {leg.crowd && (
+          <p className="mt-1 text-xs">
+            <CrowdMeter crowd={leg.crowd} withText />
           </p>
         )}
 

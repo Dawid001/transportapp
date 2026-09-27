@@ -175,7 +175,7 @@ function addLegAlerts(journeys: Journey[]) {
 /** Treinstukken in reisadviezen aanvullen met NS-realtime: werkelijke tijden, spoor en uitval. */
 const CROWD_RANK: Record<Crowd, number> = { LOW: 1, MEDIUM: 2, HIGH: 3 };
 
-/** Drukte van het drukste stuk tussen in- en uitstappen, en het materieel bij het instappen. */
+/** Drukte van het drukste stuk tussen in- en uitstappen. */
 function addCrowd(leg: TransitLeg, run: TrainRun) {
   const fromCode = leg.from.stopId ? nsRealtime?.stationCode(leg.from.stopId) : undefined;
   const toCode = leg.to.stopId ? nsRealtime?.stationCode(leg.to.stopId) : undefined;
@@ -184,7 +184,6 @@ function addCrowd(leg: TransitLeg, run: TrainRun) {
   const endAt = run.stops.findIndex((s, i) => i > start && s.code === toCode);
   const part = run.stops.slice(start, endAt > start ? endAt : undefined);
   for (const s of part) if (s.crowd && (!leg.crowd || CROWD_RANK[s.crowd] > CROWD_RANK[leg.crowd])) leg.crowd = s.crowd;
-  leg.stock = run.stops[start].stock;
 }
 
 async function enrichTrainLegs(journeys: Journey[]) {

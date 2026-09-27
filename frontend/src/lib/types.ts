@@ -140,9 +140,8 @@ export type TransitLeg = {
   expectedDeparture?: number;
   expectedArrival?: number;
   canceled?: boolean;
-  /** Treinen: verwachte drukte op het drukste stuk van je rit, en het materieel (NS). */
+  /** Treinen: verwachte drukte op het drukste stuk van je rit (NS). */
   crowd?: Crowd;
-  stock?: TrainStock;
   stopsBetween: number;
   fromSequence: number;
   toSequence: number;
@@ -151,7 +150,6 @@ export type TransitLeg = {
 };
 
 export type Crowd = "LOW" | "MEDIUM" | "HIGH";
-export type TrainStock = { type: string; seats?: number; parts?: number; facilities: string[] };
 
 export type Leg = WalkLeg | TransitLeg;
 export type Journey = { departure: number; arrival: number; transfers: number; legs: Leg[] };

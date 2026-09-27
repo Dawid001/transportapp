@@ -20,18 +20,13 @@ export type TrainTime = {
 
 /** Verwachte drukte in de trein (NS-prognose). */
 export type Crowd = "LOW" | "MEDIUM" | "HIGH";
-/** Materieel: treintype, zitplaatsen, aantal bakken en voorzieningen (WIFI, TOILET, STILTE, FIETS, STROOM, …). */
-export type TrainStock = { type: string; seats?: number; parts?: number; facilities: string[] };
-/** Een treinrit volgens NS: per station (stationscode) de drukte en het materieel bij vertrek. */
-export type TrainRun = { stops: { code: string; crowd?: Crowd; stock?: TrainStock }[] };
+/** Een treinrit volgens NS: per station (stationscode) de drukte bij vertrek. */
+export type TrainRun = { stops: { code: string; crowd?: Crowd }[] };
 
-type NsStockJson = { trainType?: string; numberOfSeats?: number; numberOfParts?: number; trainParts?: { facilities?: string[] }[] };
 type NsJourneyStop = {
   id: string;
   status?: string;
   departures?: { crowdForecast?: string }[];
-  actualStock?: NsStockJson;
-  plannedStock?: NsStockJson;
 };
 
 type NsStation = { code: string; UICCode: string; lat: number; lng: number; land: string; namen: { lang: string } };
@@ -119,18 +114,15 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
       .filter((s) => s.status !== "PASSING")
       .map((s) => {
         const crowd = s.departures?.[0]?.crowdForecast;
-        const st = s.actualStock ?? s.plannedStock;
-        const facilities = [...new Set((st?.trainParts ?? []).flatMap((p) => p.facilities ?? []))];
         return {
           code: s.id.replace(/_[0-9]+$/, ""),
           crowd: crowd === "LOW" || crowd === "MEDIUM" || crowd === "HIGH" ? (crowd as Crowd) : undefined,
-          stock: st?.trainType ? { type: st.trainType, seats: st.numberOfSeats, parts: st.numberOfParts, facilities } : undefined,
         };
       });
     return stops.length ? { stops } : null;
   }
 
-  /** Treinrit met drukte en materieel (2 min gecachet; null als NS de rit niet kent). */
+  /** Treinrit met drukte (2 min gecachet; null als NS de rit niet kent). */
   function run(trainNumber: string, when: number): Promise<TrainRun | null> {
     const key = `${trainNumber}:${new Date(when * 1000).toISOString().slice(0, 10)}`;
     const hit = runCache.get(key);
