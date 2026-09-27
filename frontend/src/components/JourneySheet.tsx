@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import type { ApiVehicle, Crowd, Journey, Leg, PlanNotice, TrainStock, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
-import { shareJourney } from "@/lib/share";
 import { activeWatch, journeyKey, pushSupport, unwatchJourney, watchJourney, type ActiveWatch } from "@/lib/push";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
@@ -252,9 +251,8 @@ function JourneyDetail({ journey: j, shared, vehicles, now, onShowVehicle }: { j
           Iemand deelt deze reis naar <span className="font-medium">{j.legs[j.legs.length - 1].to.name}</span> met je. Je ziet hier live waar de bus of trein is.
         </p>
       )}
-      <div className="mb-3 flex gap-2">
+      <div className="mb-3">
         <NotifyButton journey={j} />
-        {!shared && <ShareButton journey={j} />}
       </div>
       <ol className="space-y-2">
         {j.legs.map((leg, i) =>
@@ -373,31 +371,6 @@ const SUPPORT_TEXT: Record<Exclude<ReturnType<typeof pushSupport>, "ok">, string
   "ios-install": "Op iPhone: tik op Deel → \"Zet op beginscherm\", open Live OV vanaf je beginscherm en zet daar de meldingen aan.",
   denied: "Meldingen staan uit voor deze site. Zet ze aan in de instellingen van je browser.",
 };
-
-/** Link naar deze reis, zodat iemand anders live kan meekijken. */
-function ShareButton({ journey }: { journey: Journey }) {
-  const [state, setState] = useState<"idle" | "busy" | "copied" | "error">("idle");
-  async function share() {
-    setState("busy");
-    try {
-      const result = await shareJourney(journey);
-      setState(result === "copied" ? "copied" : "idle");
-      if (result === "copied") setTimeout(() => setState("idle"), 2500);
-    } catch {
-      setState("error");
-    }
-  }
-  return (
-    <button
-      onClick={share}
-      disabled={state === "busy"}
-      title="Deel een link waarmee iemand je reis live kan volgen"
-      className="shrink-0 self-start rounded-xl bg-neutral-100 px-3 py-2 text-sm font-medium hover:bg-neutral-200 disabled:opacity-60 dark:bg-neutral-800 dark:hover:bg-neutral-700"
-    >
-      {state === "copied" ? "✓ Link gekopieerd" : state === "error" ? "Delen mislukt" : "↗ Deel reis"}
-    </button>
-  );
-}
 
 /** "Houd me op de hoogte": de backend stuurt meldingen voor deze reis, ook als de app dicht is. */
 function NotifyButton({ journey }: { journey: Journey }) {
