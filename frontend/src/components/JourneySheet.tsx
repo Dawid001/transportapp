@@ -10,6 +10,8 @@ type Props = {
   journeys: Journey[] | null;
   /** Rijdt er (voorlopig) niets meer? */
   notice?: PlanNotice;
+  /** Gepland via rolstoeltoegankelijke haltes. */
+  wheelchair?: boolean;
   loading: boolean;
   error: string | null;
   selected: number | null;
@@ -35,7 +37,7 @@ function expectedDeparture(leg: TransitLeg, vehicle?: ApiVehicle): number {
 }
 
 /** Onderin: reisopties, en na het kiezen de reis stap voor stap met live status. */
-export function JourneySheet({ journeys, notice, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
+export function JourneySheet({ journeys, notice, wheelchair, loading, error, selected, vehicles, onSelect, onShowVehicle, onClose, routeSaved, onToggleRoute }: Props) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
@@ -100,6 +102,14 @@ export function JourneySheet({ journeys, notice, loading, error, selected, vehic
                     </>
                   ) : (
                     <p className="font-medium">Er is geen reis met het OV gevonden. Lopen kan wel:</p>
+                  )}
+                </li>
+              )}
+              {wheelchair && journeys && journeys.length > 0 && (
+                <li className="rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:bg-blue-950 dark:text-blue-100">
+                  ♿ Alleen haltes die als rolstoeltoegankelijk bekendstaan, met extra overstaptijd.
+                  {journeys.some((j) => j.legs.some((l) => l.type === "transit" && l.mode === "train")) && (
+                    <> Met de trein? Vraag vooraf NS Reisassistentie aan.</>
                   )}
                 </li>
               )}

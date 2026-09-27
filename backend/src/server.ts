@@ -505,7 +505,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const at = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
     // Standaard vertrekken om `time`; met arriveBy=1 aankomen vóór `time`.
     const arriveBy = url.searchParams.get("arriveBy") === "1";
-    const journeys = arriveBy ? ctx.planner.arriveBy(from, to, at, 5) : ctx.planner.plan(from, to, at, 5);
+    // wheelchair=1: alleen via haltes die als rolstoeltoegankelijk bekendstaan.
+    const options = { wheelchair: url.searchParams.get("wheelchair") === "1" };
+    const journeys = arriveBy ? ctx.planner.arriveBy(from, to, at, 5, options) : ctx.planner.plan(from, to, at, 5, options);
     await enrichTrainLegs(journeys);
     addLegAlerts(journeys);
     // Rijdt er (voorlopig) niets meer, bv. midden in de nacht? Dan zeggen we dat met de eerste reis erbij.
@@ -523,7 +525,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
         : firstTransit - at > 2 * 3600
           ? { kind: "noServiceUntil" as const, firstDeparture: firstTransit }
           : undefined;
-    return sendJson(res, 200, { from, to, time: at, arriveBy, journeys, notice });
+    return sendJson(res, 200, { from, to, time: at, arriveBy, wheelchair: options.wheelchair, journeys, notice });
   }
 
   if (url.pathname === "/api/stops") {

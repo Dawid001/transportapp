@@ -26,6 +26,9 @@ type Props = {
   time: number | null;
   /** true = `time` is de gewenste aankomsttijd i.p.v. de vertrektijd. */
   arriveBy: boolean;
+  /** Alleen via rolstoeltoegankelijke haltes. */
+  wheelchair: boolean;
+  onWheelchair: (on: boolean) => void;
   locationError?: string | null;
   /** Verandert als het Van-veld de focus moet krijgen (bv. locatie mislukt). */
   focusFrom?: number;
@@ -40,7 +43,7 @@ type Props = {
 };
 
 /** Bovenin: van waar naar waar, en wanneer. */
-export function PlannerPanel({ from, to, time, arriveBy, locationError, focusFrom, near, onFrom, onTo, onUseMyLocation, onSwap, onTime, onUseRoute }: Props) {
+export function PlannerPanel({ from, to, time, arriveBy, wheelchair, onWheelchair, locationError, focusFrom, near, onFrom, onTo, onUseMyLocation, onSwap, onTime, onUseRoute }: Props) {
   const mode = time === null ? "nu" : arriveBy ? "aankomst" : "vertrek";
   const { favorites } = useFavorites();
   const endpointFavs = favorites.filter((f): f is Extract<Favorite, { kind: "stop" | "place" }> => f.kind !== "route");
@@ -127,6 +130,16 @@ export function PlannerPanel({ from, to, time, arriveBy, locationError, focusFro
             className="min-w-0 flex-1 rounded-md bg-transparent text-sm outline-none"
           />
         )}
+        <button
+          type="button"
+          onClick={() => onWheelchair(!wheelchair)}
+          aria-pressed={wheelchair}
+          aria-label="Rolstoeltoegankelijk plannen"
+          title="Rolstoeltoegankelijk plannen"
+          className={`ml-auto shrink-0 rounded-md px-2 py-1 text-base leading-none ${wheelchair ? "bg-blue-600 text-white" : "bg-neutral-100 text-neutral-500 hover:text-neutral-900 dark:bg-neutral-800 dark:hover:text-white"}`}
+        >
+          ♿
+        </button>
       </div>
       {locationError && <p className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{locationError}</p>}
       {!to && routes.length > 0 && (

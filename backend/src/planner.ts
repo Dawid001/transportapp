@@ -15,6 +15,7 @@ const WALK_DETOUR = 1.3; // hemelsbreed → echte looproute
 const MAX_ACCESS_M = 1000; // lopen naar de eerste / vanaf de laatste halte (~18 min)
 const MAX_TRANSFER_M = 400; // lopen tussen haltes bij een overstap
 const TRANSFER_BUFFER_S = 60; // minimale overstaptijd bovenop het lopen
+const WHEELCHAIR_BUFFER_S = 180; // met rolstoel: meer tijd voor lift, oprijplaat en perronwissel
 const MAX_ROUNDS = 5; // = maximaal 4 overstappen
 const MAX_DIRECT_WALK_M = 2000; // korter dan dit: ook "alleen lopen" als optie
 const INF = 0x3fffffff;
@@ -25,6 +26,8 @@ const M_LNG = 111_320 * Math.cos((52 * Math.PI) / 180);
 export type LatLng = { lat: number; lng: number };
 
 export type PlanPoint = { name: string; lat: number; lng: number; stopIds?: string[] };
+/** wheelchair: alleen in- en uitstappen bij haltes die als rolstoeltoegankelijk bekendstaan. */
+export type PlanOptions = { wheelchair?: boolean };
 
 export type WalkLeg = { type: "walk"; from: LegPlace; to: LegPlace; departure: number; arrival: number; distance: number };
 export type TransitLeg = {
@@ -76,16 +79,25 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
   const t0 = Date.now();
 
   // --- Haltes als getallen, met coördinaten, naam en perron -------------------------------------
+  // Oudere databases hebben de rolstoelkolom nog niet; dan is alles onbekend (en dus toegestaan).
+  const hasWheelchair = (db.prepare("PRAGMA table_info(stops)").all() as { name: string }[]).some((c) => c.name === "wheelchair_boarding");
   const stopRows = db
-    .prepare("SELECT stop_id, stop_name, stop_lat, stop_lon, platform_code FROM stops WHERE location_type = 0 OR location_type IS NULL")
-    .all() as { stop_id: string; stop_name: string; stop_lat: number; stop_lon: number; platform_code: string | null }[];
+    .prepare(
+      `SELECT stop_id, stop_name, stop_lat, stop_lon, platform_code, ${hasWheelchair ? "wheelchair_boarding" : "NULL"} AS wheelchair
+       FROM stops WHERE location_type = 0 OR location_type IS NULL`,
+    )
+    .all() as { stop_id: string; stop_name: string; stop_lat: number; stop_lon: number; platform_code: string | null; wheelchair: number | null }[];
   const stopIdx = new Map<string, number>();
   const stopIds: string[] = [];
   const stopName: string[] = [];
   const stopPlatform: (string | undefined)[] = [];
   const lat = new Float64Array(stopRows.length);
   const lng = new Float64Array(stopRows.length);
+  const accessible = new Uint8Array(stopRows.length);
   stopRows.forEach((r, i) => {
+    // 1 = toegankelijk, 0 = niet (bus/tram, uit het haltebestand). Leeg = onbekend: vrijwel alleen treinstations,
+    // en die zijn met NS Reisassistentie te doen, dus die laten we toe.
+    accessible[i] = r.wheelchair === 0 ? 0 : 1;
     stopIdx.set(r.stop_id, i);
     stopIds.push(r.stop_id);
     stopName.push(r.stop_name);
@@ -201,7 +213,7 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
 
   type Access = { stop: number; seconds: number };
 
-  function accessFor(point: PlanPoint): Access[] {
+  function accessFor(point: PlanPoint, wheelchair = false): Access[] {
     const out = new Map<number, number>();
     // Gekozen halte: al zijn perrons zonder lopen.
     for (const id of point.stopIds ?? []) {
@@ -213,7 +225,7 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
       const s = walkSeconds(meters);
       if (!out.has(stop) || out.get(stop)! > s) out.set(stop, s);
     }
-    return [...out].map(([stop, seconds]) => ({ stop, seconds }));
+    return [...out].filter(([stop]) => !wheelchair || accessible[stop]).map(([stop, seconds]) => ({ stop, seconds }));
   }
 
   /** Eerste rit op positie `pos` die vertrekt op of na `time` (ritten zijn op vertrektijd gesorteerd). */
@@ -245,7 +257,8 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
     | { kind: "walk"; from: number; seconds: number; via: TransitLabel };
   type TransitLabel = { kind: "transit"; route: RoutePattern; trip: number; boardPos: number; alightPos: number; boardStop: number };
 
-  function raptor(routes: Map<number, RoutePattern>, access: Access[], egress: Map<number, number>, depTime: number) {
+  function raptor(routes: Map<number, RoutePattern>, access: Access[], egress: Map<number, number>, depTime: number, wheelchair = false) {
+    const buffer = wheelchair ? WHEELCHAIR_BUFFER_S : TRANSFER_BUFFER_S;
     const canceledCache = new Map<string, boolean>();
     const isCanceled = (t: DayTripRef) => {
       let c = canceledCache.get(t.tripId);
@@ -302,7 +315,8 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
         for (let pos = startPos; pos < route.stops.length; pos++) {
           const s = route.stops[pos];
           if (s < 0) continue;
-          if (trip >= 0) {
+          const usable = !wheelchair || accessible[s] === 1;
+          if (trip >= 0 && usable) {
             const t = route.trips[trip];
             const arr = t.start + t.arr[pos];
             if (arr < best[s] && arr < bestTarget) {
@@ -313,8 +327,8 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
             }
           }
           // Kunnen we hier (eerder) instappen?
-          if (prev[s] < INF) {
-            const ready = prev[s] + (k > 1 ? TRANSFER_BUFFER_S : 0);
+          if (prev[s] < INF && usable) {
+            const ready = prev[s] + (k > 1 ? buffer : 0);
             if (trip < 0 || ready <= route.trips[trip].start + route.trips[trip].dep[pos]) {
               const t = earliestTrip(route, pos, ready, isCanceled);
               if (t >= 0 && (trip < 0 || t !== trip)) {
@@ -505,13 +519,13 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
    * Plant reizen van `from` naar `to`, vertrekkend vanaf `time` (unix-seconden).
    * Geeft tot `count` opties: telkens de snelste, daarna met een latere vertrektijd opnieuw.
    */
-  function plan(from: PlanPoint, to: PlanPoint, time: number, count = 5): Journey[] {
+  function plan(from: PlanPoint, to: PlanPoint, time: number, count = 5, { wheelchair = false }: PlanOptions = {}): Journey[] {
     const started = Date.now();
     const date = dateOf(time);
     const base = serviceDayStart(date);
     const routes = raptorDay(date);
-    const access = accessFor(from);
-    const egress = new Map(accessFor(to).map((a) => [a.stop, a.seconds]));
+    const access = accessFor(from, wheelchair);
+    const egress = new Map(accessFor(to, wheelchair).map((a) => [a.stop, a.seconds]));
     const journeys: Journey[] = [];
     const seen = new Set<string>();
 
@@ -528,7 +542,7 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
 
     let depTime = time - base;
     for (let attempt = 0; attempt < count * 3 && journeys.filter((j) => j.legs.some((l) => l.type === "transit")).length < count + 3; attempt++) {
-      const run = raptor(routes, access, egress, depTime);
+      const run = raptor(routes, access, egress, depTime, wheelchair);
       if (!run.results.length) break;
       // Per aantal overstappen de snelste; toon de snelste en (als die niet veel langzamer is) ook minder overstappen.
       const fastest = run.results[run.results.length - 1];
@@ -567,10 +581,16 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
   const warm = () => void raptorDay(dateOf(Date.now() / 1000));
 
   /** Vroegst mogelijke aankomst bij vertrek op `time` (één RAPTOR-run), of undefined. */
-  function earliestArrival(from: PlanPoint, to: PlanPoint, time: number): number | undefined {
+  function earliestArrival(from: PlanPoint, to: PlanPoint, time: number, wheelchair: boolean): number | undefined {
     const date = dateOf(time);
     const base = serviceDayStart(date);
-    const run = raptor(raptorDay(date), accessFor(from), new Map(accessFor(to).map((a) => [a.stop, a.seconds])), time - base);
+    const run = raptor(
+      raptorDay(date),
+      accessFor(from, wheelchair),
+      new Map(accessFor(to, wheelchair).map((a) => [a.stop, a.seconds])),
+      time - base,
+      wheelchair,
+    );
     if (!run.results.length) return undefined;
     return base + Math.min(...run.results.map((r) => r.arrival));
   }
@@ -579,24 +599,25 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
    * "Aankomen om": zoek met een binaire zoektocht het laatste vertrek dat vóór `target` aankomt (vroegste
    * aankomst stijgt met de vertrektijd), en geef de opties die op tijd zijn, de laatste eerst.
    */
-  function arriveBy(from: PlanPoint, to: PlanPoint, target: number, count = 5): Journey[] {
+  function arriveBy(from: PlanPoint, to: PlanPoint, target: number, count = 5, options: PlanOptions = {}): Journey[] {
+    const wheelchair = options.wheelchair ?? false;
     const started = Date.now();
     // Niet eerder dan nu vertrekken: een rit die al weg is heb je niets aan.
     const now = Math.floor(Date.now() / 1000);
     let lo = Math.max(target - 4 * 3600, now);
     if (lo >= target) return [];
     let hi = target;
-    if ((earliestArrival(from, to, lo) ?? Infinity) > target) return [];
+    if ((earliestArrival(from, to, lo, wheelchair) ?? Infinity) > target) return [];
     while (hi - lo > 60) {
       const mid = Math.floor((lo + hi) / 2);
-      if ((earliestArrival(from, to, mid) ?? Infinity) <= target) lo = mid;
+      if ((earliestArrival(from, to, mid, wheelchair) ?? Infinity) <= target) lo = mid;
       else hi = mid;
     }
     // Een paar opties rond het laatste vertrek dat nog op tijd is.
     // Te weinig? Dan eerder beginnen, want plan() levert maar een beperkt aantal opties vanaf de starttijd.
     const found = new Map<string, Journey>();
     for (let back = 25 * 60; back <= 3 * 3600 && found.size < count; back += 35 * 60) {
-      for (const j of plan(from, to, lo - back, count + 4)) {
+      for (const j of plan(from, to, lo - back, count + 4, options)) {
         if (j.arrival <= target && j.departure >= now && j.legs.some((l) => l.type === "transit")) found.set(`${j.departure}-${j.arrival}`, j);
       }
     }

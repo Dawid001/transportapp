@@ -15,6 +15,7 @@ import { PlannerPanel } from "./PlannerPanel";
 import { StatusPill, type Status } from "./StatusPill";
 import { StopSheet } from "./StopSheet";
 import { VehicleSheet } from "./VehicleSheet";
+import { useWheelchair } from "@/lib/preferences";
 
 // De backend ververst elke 20s; door vaker te vragen zien we nieuwe posities sneller.
 const REFRESH_MS = 10_000;
@@ -72,6 +73,7 @@ export function LiveMap() {
   const [to, setTo] = useState<PlanEndpoint | null>(null);
   const [planTime, setPlanTime] = useState<number | null>(null);
   const [planArriveBy, setPlanArriveBy] = useState(false);
+  const [wheelchair, setWheelchair] = useWheelchair();
   const [plan, setPlan] = useState<{ key: string; journeys: Journey[]; notice?: PlanNotice } | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
@@ -659,7 +661,7 @@ export function LiveMap() {
   }, []);
 
   // Plannen zodra van en naar bekend zijn; bij "nu" elke minuut opnieuw (vertragingen, gemiste bus).
-  const planKey = from && to ? JSON.stringify([endpointParams("from", from), endpointParams("to", to), planTime, planArriveBy]) : null;
+  const planKey = from && to ? JSON.stringify([endpointParams("from", from), endpointParams("to", to), planTime, planArriveBy, wheelchair]) : null;
   useEffect(() => {
     if (!from || !to || !planKey) return;
     let controller = new AbortController();
@@ -669,6 +671,7 @@ export function LiveMap() {
       const params = new URLSearchParams({ ...endpointParams("from", from), ...endpointParams("to", to) });
       if (planTime) params.set("time", String(planTime));
       if (planTime && planArriveBy) params.set("arriveBy", "1");
+      if (wheelchair) params.set("wheelchair", "1");
       fetch(`/api/plan?${params}`, { signal: controller.signal })
         .then((res) => (res.ok ? (res.json() as Promise<PlanResponse>) : Promise.reject(new Error(`HTTP ${res.status}`))))
         .then((data) => {
@@ -683,7 +686,7 @@ export function LiveMap() {
       clearInterval(timer);
       controller.abort();
     };
-  }, [from, to, planTime, planArriveBy, planKey]);
+  }, [from, to, planTime, planArriveBy, wheelchair, planKey]);
 
   const journeys = plan && plan.key === planKey ? plan.journeys : null;
   // Ook zonder vertrekpunt naar de gekozen bestemming vliegen.
@@ -795,6 +798,8 @@ export function LiveMap() {
           to={to}
           time={planTime}
           arriveBy={planArriveBy}
+          wheelchair={wheelchair}
+          onWheelchair={setWheelchair}
           locationError={locationError}
           focusFrom={focusFrom}
           near={mapCenter}
@@ -816,6 +821,7 @@ export function LiveMap() {
         <JourneySheet
           journeys={journeys}
           notice={plan && plan.key === planKey ? plan.notice : undefined}
+          wheelchair={wheelchair}
           loading={!!from && !journeys && !planError}
           error={!from ? (locationError ?? "Kies een vertrekpunt (of Mijn locatie).") : planError}
           selected={selectedJourney}

@@ -23,7 +23,7 @@ const TABLES: Record<string, { file: string; columns: string[]; primaryKey: stri
   },
   stops: {
     file: "stops.txt",
-    columns: ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station", "platform_code"],
+    columns: ["stop_id", "stop_code", "stop_name", "stop_lat", "stop_lon", "location_type", "parent_station", "platform_code", "wheelchair_boarding"],
     primaryKey: "stop_id",
   },
   // Op welke dagen een service_id rijdt. De OVapi-GTFS heeft geen calendar.txt, alleen calendar_dates.
@@ -35,7 +35,7 @@ const TABLES: Record<string, { file: string; columns: string[]; primaryKey: stri
   },
 };
 
-const INTEGER_COLUMNS = new Set(["route_type", "direction_id", "location_type", "exception_type"]);
+const INTEGER_COLUMNS = new Set(["route_type", "direction_id", "location_type", "exception_type", "wheelchair_boarding"]);
 const REAL_COLUMNS = new Set(["stop_lat", "stop_lon"]);
 
 function columnType(column: string): string {
