@@ -3,3 +3,6 @@ dist/
 .env
 *.pb
 backend/data/
+
+# Bouwbestanden van Next.js, waar ze ook terechtkomen
+.next/
