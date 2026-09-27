@@ -71,6 +71,7 @@ export function LiveMap() {
   const [from, setFrom] = useState<PlanEndpoint | null>(null);
   const [to, setTo] = useState<PlanEndpoint | null>(null);
   const [planTime, setPlanTime] = useState<number | null>(null);
+  const [planArriveBy, setPlanArriveBy] = useState(false);
   const [plan, setPlan] = useState<{ key: string; journeys: Journey[]; notice?: PlanNotice } | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedJourney, setSelectedJourney] = useState<number | null>(null);
@@ -658,7 +659,7 @@ export function LiveMap() {
   }, []);
 
   // Plannen zodra van en naar bekend zijn; bij "nu" elke minuut opnieuw (vertragingen, gemiste bus).
-  const planKey = from && to ? JSON.stringify([endpointParams("from", from), endpointParams("to", to), planTime]) : null;
+  const planKey = from && to ? JSON.stringify([endpointParams("from", from), endpointParams("to", to), planTime, planArriveBy]) : null;
   useEffect(() => {
     if (!from || !to || !planKey) return;
     let controller = new AbortController();
@@ -667,6 +668,7 @@ export function LiveMap() {
       controller = new AbortController();
       const params = new URLSearchParams({ ...endpointParams("from", from), ...endpointParams("to", to) });
       if (planTime) params.set("time", String(planTime));
+      if (planTime && planArriveBy) params.set("arriveBy", "1");
       fetch(`/api/plan?${params}`, { signal: controller.signal })
         .then((res) => (res.ok ? (res.json() as Promise<PlanResponse>) : Promise.reject(new Error(`HTTP ${res.status}`))))
         .then((data) => {
@@ -681,7 +683,7 @@ export function LiveMap() {
       clearInterval(timer);
       controller.abort();
     };
-  }, [from, to, planTime, planKey]);
+  }, [from, to, planTime, planArriveBy, planKey]);
 
   const journeys = plan && plan.key === planKey ? plan.journeys : null;
   // Ook zonder vertrekpunt naar de gekozen bestemming vliegen.
@@ -792,6 +794,7 @@ export function LiveMap() {
           from={from}
           to={to}
           time={planTime}
+          arriveBy={planArriveBy}
           locationError={locationError}
           focusFrom={focusFrom}
           near={mapCenter}
@@ -799,7 +802,10 @@ export function LiveMap() {
           onTo={chooseTo}
           onUseMyLocation={requestMyLocation}
           onSwap={swap}
-          onTime={setPlanTime}
+          onTime={(time, arriveBy) => {
+            setPlanTime(time);
+            setPlanArriveBy(arriveBy);
+          }}
           onUseRoute={applyRoute}
         />
         {/* Alleen tonen als er iets mis is (backend onbereikbaar), anders is de kaart zelf genoeg. */}

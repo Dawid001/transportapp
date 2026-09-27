@@ -503,7 +503,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!from || !to) return sendJson(res, 400, { error: "Van en naar zijn verplicht (halte of coördinaten)" });
     const time = Number(url.searchParams.get("time"));
     const at = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
-    const journeys = ctx.planner.plan(from, to, at, 5);
+    // Standaard vertrekken om `time`; met arriveBy=1 aankomen vóór `time`.
+    const arriveBy = url.searchParams.get("arriveBy") === "1";
+    const journeys = arriveBy ? ctx.planner.arriveBy(from, to, at, 5) : ctx.planner.plan(from, to, at, 5);
     await enrichTrainLegs(journeys);
     addLegAlerts(journeys);
     // Rijdt er (voorlopig) niets meer, bv. midden in de nacht? Dan zeggen we dat met de eerste reis erbij.
@@ -512,12 +514,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       .filter((l) => l.type === "transit")
       .reduce<number | undefined>((min, l) => (min === undefined || l.departure < min ? l.departure : min), undefined);
     const notice =
-      firstTransit === undefined
+      arriveBy
+        ? journeys.length === 0
+          ? { kind: "noTransit" as const }
+          : undefined
+        : firstTransit === undefined
         ? { kind: "noTransit" as const }
         : firstTransit - at > 2 * 3600
           ? { kind: "noServiceUntil" as const, firstDeparture: firstTransit }
           : undefined;
-    return sendJson(res, 200, { from, to, time: at, journeys, notice });
+    return sendJson(res, 200, { from, to, time: at, arriveBy, journeys, notice });
   }
 
   if (url.pathname === "/api/stops") {

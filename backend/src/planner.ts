@@ -240,7 +240,10 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
   type Label =
     | { kind: "access"; seconds: number }
     | { kind: "transit"; route: RoutePattern; trip: number; boardPos: number; alightPos: number; boardStop: number }
-    | { kind: "walk"; from: number; seconds: number };
+    // Een loopje onthoudt zelf de rit waarmee de vertrekhalte bereikt werd: die halte kan in dezelfde
+    // ronde nog door een ander loopje overschreven worden, en dan zou de rit bij het terugrekenen ontbreken.
+    | { kind: "walk"; from: number; seconds: number; via: TransitLabel };
+  type TransitLabel = { kind: "transit"; route: RoutePattern; trip: number; boardPos: number; alightPos: number; boardStop: number };
 
   function raptor(routes: Map<number, RoutePattern>, access: Access[], egress: Map<number, number>, depTime: number) {
     const canceledCache = new Map<string, boolean>();
@@ -327,14 +330,19 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
       }
 
       // Overstappen te voet vanaf haltes die deze ronde met een rit bereikt zijn.
-      for (const s of [...newlyMarked]) {
+      // Alleen vanaf haltes die met een rit bereikt zijn, met de aankomsttijd van die rit (niet verder lopen na lopen).
+      const byTransit = [...newlyMarked].flatMap((s) => {
+        const l = lab.get(s);
+        return l?.kind === "transit" ? [{ s, arr: cur[s], via: l }] : [];
+      });
+      for (const { s, arr: arrived, via } of byTransit) {
         for (let j = footStart[s]; j < footStart[s + 1]; j++) {
           const t = footTo[j];
-          const arr = cur[s] + footSec[j];
+          const arr = arrived + footSec[j];
           if (arr < best[t] && arr < bestTarget) {
             cur[t] = arr;
             best[t] = arr;
-            lab.set(t, { kind: "walk", from: s, seconds: footSec[j] });
+            lab.set(t, { kind: "walk", from: s, seconds: footSec[j], via });
             newlyMarked.add(t);
           }
         }
@@ -430,7 +438,7 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
           distance: Math.round((label.seconds * WALK_SPEED) / WALK_DETOUR),
         });
         stop = label.from;
-        label = run.labels[k].get(stop)!;
+        label = label.via;
       }
       if (label.kind !== "transit") break;
       const trip = label.route.trips[label.trip];
@@ -519,7 +527,7 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
     }
 
     let depTime = time - base;
-    for (let attempt = 0; attempt < count * 2 && journeys.filter((j) => j.legs.some((l) => l.type === "transit")).length < count; attempt++) {
+    for (let attempt = 0; attempt < count * 3 && journeys.filter((j) => j.legs.some((l) => l.type === "transit")).length < count + 3; attempt++) {
       const run = raptor(routes, access, egress, depTime);
       if (!run.results.length) break;
       // Per aantal overstappen de snelste; toon de snelste en (als die niet veel langzamer is) ook minder overstappen.
@@ -558,7 +566,46 @@ export function createPlanner({ db, timetable, lookup, realtime, lineLabel, trip
   /** Dienstregeling van vandaag alvast klaarzetten, zodat de eerste zoekopdracht niet wacht. */
   const warm = () => void raptorDay(dateOf(Date.now() / 1000));
 
-  return { plan, warm };
+  /** Vroegst mogelijke aankomst bij vertrek op `time` (één RAPTOR-run), of undefined. */
+  function earliestArrival(from: PlanPoint, to: PlanPoint, time: number): number | undefined {
+    const date = dateOf(time);
+    const base = serviceDayStart(date);
+    const run = raptor(raptorDay(date), accessFor(from), new Map(accessFor(to).map((a) => [a.stop, a.seconds])), time - base);
+    if (!run.results.length) return undefined;
+    return base + Math.min(...run.results.map((r) => r.arrival));
+  }
+
+  /**
+   * "Aankomen om": zoek met een binaire zoektocht het laatste vertrek dat vóór `target` aankomt (vroegste
+   * aankomst stijgt met de vertrektijd), en geef de opties die op tijd zijn, de laatste eerst.
+   */
+  function arriveBy(from: PlanPoint, to: PlanPoint, target: number, count = 5): Journey[] {
+    const started = Date.now();
+    // Niet eerder dan nu vertrekken: een rit die al weg is heb je niets aan.
+    const now = Math.floor(Date.now() / 1000);
+    let lo = Math.max(target - 4 * 3600, now);
+    if (lo >= target) return [];
+    let hi = target;
+    if ((earliestArrival(from, to, lo) ?? Infinity) > target) return [];
+    while (hi - lo > 60) {
+      const mid = Math.floor((lo + hi) / 2);
+      if ((earliestArrival(from, to, mid) ?? Infinity) <= target) lo = mid;
+      else hi = mid;
+    }
+    // Een paar opties rond het laatste vertrek dat nog op tijd is.
+    // Te weinig? Dan eerder beginnen, want plan() levert maar een beperkt aantal opties vanaf de starttijd.
+    const found = new Map<string, Journey>();
+    for (let back = 25 * 60; back <= 3 * 3600 && found.size < count; back += 35 * 60) {
+      for (const j of plan(from, to, lo - back, count + 4)) {
+        if (j.arrival <= target && j.departure >= now && j.legs.some((l) => l.type === "transit")) found.set(`${j.departure}-${j.arrival}`, j);
+      }
+    }
+    const onTime = [...found.values()].sort((a, b) => a.departure - b.departure || a.arrival - b.arrival);
+    console.log(`Planner: aankomen om voor ${from.name} → ${to.name} in ${Date.now() - started} ms`);
+    return onTime.slice(-count);
+  }
+
+  return { plan, arriveBy, warm };
 }
 
 /** Dienstdag (YYYYMMDD) waarin een moment valt; vóór 04:00 hoort het nog bij de vorige dag voor nachtritten. */
