@@ -1,0 +1,24 @@
+{
+  "name": "live-ov",
+  "version": "1.0.0",
+  "description": "Live OV-kaart en reisplanner voor Nederland",
+  "scripts": {
+    "dev": "concurrently --names backend,frontend --prefix-colors blue,green --kill-others-on-fail \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "setup": "npm --prefix backend install && npm --prefix frontend install && npm --prefix backend run gtfs:update",
+    "build": "npm --prefix frontend run build",
+    "start": "concurrently --names backend,frontend --prefix-colors blue,green --kill-others \"npm --prefix backend start\" \"npm --prefix frontend start\"",
+    "typecheck": "npm --prefix backend run typecheck && cd frontend && npx tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dawid001/transportapp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dawid001/transportapp/issues"
+  },
+  "homepage": "https://github.com/Dawid001/transportapp#readme",
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  },
+  "private": true
+}

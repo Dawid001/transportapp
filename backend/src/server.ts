@@ -23,7 +23,8 @@ try {
   // Geen .env: dan draait alles behalve de NS-treinen.
 }
 
-const PORT = Number(process.env.PORT) || 3001;
+// Eigen variabele: PORT is meestal voor de frontend bedoeld (bv. als beide via één commando starten).
+const PORT = Number(process.env.BACKEND_PORT) || 3001;
 // OVapi staat ~2 requests per minuut toe (daarboven 429). Eén poller voor alle gebruikers samen,
 // met ETag zodat een ongewijzigde feed alleen een lichte 304 kost. Om de 30 s wisselen we af tussen
 // posities en verwachte tijden, dus elk één keer per minuut (OVapi ververst posities ook ~1× per minuut).

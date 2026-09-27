@@ -2,6 +2,21 @@
 
 Live kaart van het Nederlandse OV op basis van de OVapi GTFS-Realtime feeds.
 
+
+## Snel starten
+
+**Windows**: dubbelklik op **`Start Live OV.cmd`**. Het installeert wat ontbreekt, bouwt de eerste keer de dienstregeling (een paar minuten), start backend + frontend en opent http://localhost:3000.
+
+**Of met de terminal**, vanuit deze map:
+
+```bash
+npm install        # eenmalig
+npm run setup      # eenmalig: onderdelen installeren + dienstregeling opbouwen
+npm run dev        # backend (poort 3001) en frontend (poort 3000) samen
+```
+
+Stoppen met Ctrl+C. Voor de NS-treinen is een key nodig in `backend/.env` (zie "Treinen" hieronder). De backend gebruikt `BACKEND_PORT` (standaard 3001), zodat `PORT` voor de frontend blijft.
+
 ## Fase 1 — feed uitlezen
 
 ```bash
