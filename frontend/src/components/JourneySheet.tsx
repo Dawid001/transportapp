@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { ApiVehicle, Journey, Leg, PlanNotice, TransitLeg } from "@/lib/types";
 import { AlertList } from "./AlertList";
+import { activeWatch, journeyKey, pushSupport, unwatchJourney, watchJourney, type ActiveWatch } from "@/lib/push";
 import { DELAY_TONE_CLASSES, MODE_COLORS, MODE_LABELS, dayLabel, delayMinutes, delayTone, formatClock, formatDelay } from "@/lib/format";
 
 type Props = {
@@ -184,6 +185,7 @@ function JourneyDetail({ journey: j, vehicles, now, onShowVehicle }: { journey: 
           {durationText(j.arrival - j.departure)} · {j.transfers === 0 ? "direct" : `${j.transfers}× overstappen`}
         </span>
       </p>
+      <NotifyButton journey={j} />
       <ol className="space-y-2">
         {j.legs.map((leg, i) =>
           leg.type === "walk" ? (
@@ -286,4 +288,59 @@ function liveStatus(leg: TransitLeg, vehicle: ApiVehicle | undefined, dep: numbe
     return { text: `● Onderweg · uitstappen ${m <= 0 ? "nu" : `over ${m} min`}`, live: true };
   }
   return { text: "● De rit is voorbij je uitstaphalte", live: true };
+}
+
+const SUPPORT_TEXT: Record<Exclude<ReturnType<typeof pushSupport>, "ok">, string> = {
+  insecure: "Meldingen werken alleen via een beveiligde verbinding (https). Op deze computer via http://localhost:3000.",
+  unsupported: "Deze browser ondersteunt geen pushmeldingen.",
+  "ios-install": "Op iPhone: tik op Deel → \"Zet op beginscherm\", open Live OV vanaf je beginscherm en zet daar de meldingen aan.",
+  denied: "Meldingen staan uit voor deze site. Zet ze aan in de instellingen van je browser.",
+};
+
+/** "Houd me op de hoogte": de backend stuurt meldingen voor deze reis, ook als de app dicht is. */
+function NotifyButton({ journey }: { journey: Journey }) {
+  const [support] = useState(() => pushSupport());
+  const [watch, setWatch] = useState<ActiveWatch | null>(() => activeWatch());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const following = watch?.key === journeyKey(journey);
+
+  if (support !== "ok") {
+    return <p className="mb-2 rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">🔔 {SUPPORT_TEXT[support]}</p>;
+  }
+
+  async function toggle() {
+    setBusy(true);
+    setError(null);
+    try {
+      if (following && watch) {
+        await unwatchJourney(watch);
+        setWatch(null);
+      } else {
+        setWatch(await watchJourney(journey));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Meldingen aanzetten mislukt.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={toggle}
+        disabled={busy}
+        className={`w-full rounded-xl py-2 text-sm font-medium transition disabled:opacity-60 ${
+          following ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-blue-600 text-white hover:bg-blue-700"
+        }`}
+      >
+        {busy ? "Even geduld…" : following ? "🔔 Je krijgt meldingen voor deze reis · stoppen" : "🔔 Houd me op de hoogte"}
+      </button>
+      {following && (
+        <p className="mt-1 text-xs text-neutral-500">Je krijgt een melding als je moet vertrekken, als je voertuig eraan komt, bij vertraging of uitval en vlak voor het uitstappen.</p>
+      )}
+      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  );
 }

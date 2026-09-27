@@ -9,6 +9,7 @@ import { startNsPoller } from "./nsPoller.js";
 import { createAlerts } from "./alerts.js";
 import { buildContext, type AppContext } from "./context.js";
 import { startGtfsUpdater } from "./gtfsUpdater.js";
+import { createJourneyWatcher, type WatchLeg } from "./journeyWatch.js";
 import { createNsRealtime } from "./nsRealtime.js";
 import type { Journey, PlanPoint } from "./planner.js";
 import { searchPlaces } from "./places.js";
@@ -194,6 +195,80 @@ async function enrichTrainLegs(journeys: Journey[]) {
   );
 }
 
+// "Houd me op de hoogte": gevolgde reizen + pushmeldingen. Realtime per reisdeel: NS voor treinen,
+// anders de verwachte tijden van OVapi (met doorgeschoven vertraging als een halte geen update heeft).
+const watcher = createJourneyWatcher(async (leg) => {
+  if (leg.mode === "train") {
+    const nr = ctx.gtfs.lookup(leg.tripId)?.shortName;
+    if (!nr) return undefined;
+    const [deps, arrs] = await Promise.all([
+      leg.fromStopId ? trainBoard([leg.fromStopId], "departures") : undefined,
+      leg.toStopId ? trainBoard([leg.toStopId], "arrivals") : undefined,
+    ]);
+    const d = deps?.get(nr);
+    const a = arrs?.get(nr);
+    return { departure: d?.actual, arrival: a?.actual, canceled: d?.cancelled };
+  }
+  const route = ctx.gtfs.tripRoute(leg.tripId);
+  const update = tripUpdates?.updates.get(leg.tripId);
+  if (!route || !update) return undefined;
+  const times = tripStopTimes(route, update, Date.now() / 1000);
+  const from = times.stops.find((s) => s.sequence === leg.fromSequence);
+  const to = times.stops.find((s) => s.sequence === leg.toSequence);
+  return {
+    departure: from?.expectedDeparture ?? from?.expectedArrival,
+    arrival: to?.expectedArrival ?? to?.expectedDeparture,
+    canceled: times.canceled || from?.skipped,
+  };
+});
+
+/** JSON-body van een POST lezen (max 64 KB). */
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > 64 * 1024) throw new Error("Body te groot");
+    chunks.push(chunk as Buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+type PushSub = { endpoint: string; keys: { p256dh: string; auth: string } };
+const isSubscription = (x: unknown): x is PushSub =>
+  !!x && typeof (x as PushSub).endpoint === "string" && /^https:\/\//.test((x as PushSub).endpoint) && !!(x as PushSub).keys?.p256dh && !!(x as PushSub).keys?.auth;
+
+/** Endpoints voor meldingen (niet-GET). Geeft true als het verzoek is afgehandeld. */
+async function handlePush(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname === "/api/push/key" && req.method === "GET") {
+    sendJson(res, 200, { publicKey: watcher.publicKey });
+    return true;
+  }
+  if (url.pathname === "/api/push/test" && req.method === "POST") {
+    const body = (await readJson(req)) as { subscription?: unknown };
+    if (!isSubscription(body.subscription)) return sendJson(res, 400, { error: "Ongeldig abonnement" }), true;
+    await watcher.test(body.subscription);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+  if (url.pathname === "/api/watch" && req.method === "POST") {
+    const body = (await readJson(req)) as { subscription?: unknown; legs?: unknown };
+    if (!isSubscription(body.subscription) || !Array.isArray(body.legs) || body.legs.length === 0 || body.legs.length > 12) {
+      sendJson(res, 400, { error: "Abonnement en reisdelen zijn verplicht" });
+      return true;
+    }
+    sendJson(res, 200, { id: watcher.watch(body.subscription, body.legs as WatchLeg[]) });
+    return true;
+  }
+  const del = url.pathname.match(/^\/api\/watch\/([\w-]+)$/);
+  if (del && req.method === "DELETE") {
+    watcher.unwatch(del[1]);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+  return false;
+}
+
 /** Halte zonder de lijst interne halte-ID's (die heeft de frontend niet nodig). */
 const publicStop = ({ stopIds: _ids, ...stop }: StopGroup) => stop;
 
@@ -323,6 +398,9 @@ const server = createServer(async (req, res) => {
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
+  if (url.pathname.startsWith("/api/push/") || url.pathname.startsWith("/api/watch")) {
+    if (await handlePush(req, res, url)) return;
+  }
   if (req.method !== "GET") return sendJson(res, 405, { error: "Alleen GET" });
 
   if (url.pathname === "/api/health") {

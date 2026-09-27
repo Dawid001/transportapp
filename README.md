@@ -217,3 +217,18 @@ OVapi publiceert elke nacht een nieuwe dienstregeling, en de ritnummers in de li
 - **Wisselen zonder herstart**: elke minuut kijkt de backend of er een nieuwe versie actueel is (ook na een handmatige `gtfs:update`). Is dat zo, dan bouwt hij alles opnieuw op in een nieuwe context (`src/context.ts`), wisselt in één keer, en ruimt de oude versie een minuut later op.
 - De versie in gebruik staat in `GET /api/health` (`gtfs`).
 - Na een wissel duurt het 1–2 minuten tot bussen weer tussen updates door rijden (de snelheidshistorie begint opnieuw).
+
+## Telefoon-app (PWA) en meldingen
+
+**Installeren als app**: de frontend heeft een app-manifest (`src/app/manifest.ts`), app-iconen (`src/app/icon.tsx`, `apple-icon.tsx`, `/pwa-icon/192|512`, gegenereerd met `next/og`) en een service worker (`public/sw.js`). Chrome/Edge/Android bieden daarmee "App installeren" aan; op iPhone gaat het via Deel → "Zet op beginscherm".
+
+**Meldingen voor een reis** ("🔔 Houd me op de hoogte" in de reis): de backend volgt de reis en stuurt Web Push-meldingen, ook als de app dicht is (`src/journeyWatch.ts`):
+- *Vertrek nu*: als je naar je eerste halte moet lopen (loopduur + 2 min speling);
+- *… komt over 2 min*;
+- *+N min vertraging* / *weer op tijd*, bij een verandering van 3 min of meer;
+- *… rijdt niet*, als een rit uitvalt;
+- *Stap uit bij …*, ~2 min voor je uitstaphalte, met de overstap erbij.
+
+De VAPID-sleutels worden bij de eerste start gemaakt in `backend/data/vapid.json`; gevolgde reizen staan in `data/watches.json` (beide buiten git). Endpoints: `GET /api/push/key`, `POST /api/watch`, `DELETE /api/watch/:id`, `POST /api/push/test`.
+
+**Let op, HTTPS**: installeren, meldingen en "Mijn locatie" werken alleen via een beveiligde verbinding. Op je eigen computer telt `http://localhost:3000` als veilig. Een telefoon die de app via `http://192.168.x.x:3000` opent niet: daarvoor is hosting met HTTPS nodig (of een HTTPS-tunnel).

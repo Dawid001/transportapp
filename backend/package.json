@@ -18,10 +18,12 @@
   "dependencies": {
     "csv-parse": "^7.0.3",
     "gtfs-realtime-bindings": "^2.2.0",
+    "web-push": "^3.6.7",
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
+    "@types/web-push": "^3.6.4",
     "@types/yauzl": "^3.4.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"

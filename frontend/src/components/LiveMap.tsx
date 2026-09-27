@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { ApiVehicle, Departure, Journey, Mode, PlanEndpoint, PlanNotice, PlanResponse, RouteStop, StopSummary, TripRoute, VehiclesResponse } from "@/lib/types";
 import { boundsOf, tripRouteGeo } from "@/lib/routeGeo";
 import { endpointCoords, endpointParams, journeyGeo, journeyPoints } from "@/lib/journeyGeo";
+import { registerServiceWorker } from "@/lib/push";
 import { toSaved, useFavorites, type Favorite, type SavedEndpoint } from "@/lib/favorites";
 import { continueFrom, isMoving, makeMotion, positionAt, type Motion } from "@/lib/motion";
 import { MODE_COLORS, STALE_AFTER_SECONDS } from "@/lib/format";
@@ -261,6 +262,11 @@ export function LiveMap() {
     } catch {
       // afgebroken of backend weg: haltes blijven zoals ze waren
     }
+  }, []);
+
+  // Service worker registreren: nodig om als app te installeren en voor pushmeldingen.
+  useEffect(() => {
+    void registerServiceWorker();
   }, []);
 
   // Kaart opzetten (één keer).
