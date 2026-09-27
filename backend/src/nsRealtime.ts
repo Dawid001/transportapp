@@ -35,7 +35,28 @@ const toUnix = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 export function createNsRealtime(apiKey: string, stops: StopIndex) {
   const headers = { "Ocp-Apim-Subscription-Key": apiKey };
   /** Halte-ID (GTFS) → NS-stationscode. */
-  const codeByStop = new Map<string, string>();
+  let codeByStop = new Map<string, string>();
+  let stations: NsStation[] = [];
+  let currentStops = stops;
+
+  /** NS-stations koppelen aan het dichtstbijzijnde treinstation in onze haltelijst. */
+  function link() {
+    const next = new Map<string, string>();
+    const trainGroups = [...currentStops.groups.values()].filter((g) => g.modes.includes("train"));
+    let matched = 0;
+    for (const st of stations) {
+      let best: { stopIds: string[]; d: number } | undefined;
+      for (const g of trainGroups) {
+        const d = Math.hypot((g.lng - st.lng) * M_LNG, (g.lat - st.lat) * M_LAT);
+        if (d <= MATCH_RADIUS_M && (!best || d < best.d)) best = { stopIds: g.stopIds, d };
+      }
+      if (!best) continue;
+      for (const id of best.stopIds) next.set(id, st.code);
+      matched++;
+    }
+    codeByStop = next;
+    return matched;
+  }
   const cache = new Map<string, { at: number; data: Promise<Map<string, TrainTime>> }>();
 
   // Stations eenmalig ophalen en koppelen aan het dichtstbijzijnde treinstation in onze haltelijst.
@@ -43,19 +64,8 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
     try {
       const res = await fetch(`${BASE}/v2/stations`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const stations = ((await res.json()) as { payload: NsStation[] }).payload.filter((s) => s.land === "NL");
-      const trainGroups = [...stops.groups.values()].filter((g) => g.modes.includes("train"));
-      let matched = 0;
-      for (const st of stations) {
-        let best: { stopIds: string[]; d: number } | undefined;
-        for (const g of trainGroups) {
-          const d = Math.hypot((g.lng - st.lng) * M_LNG, (g.lat - st.lat) * M_LAT);
-          if (d <= MATCH_RADIUS_M && (!best || d < best.d)) best = { stopIds: g.stopIds, d };
-        }
-        if (!best) continue;
-        for (const id of best.stopIds) codeByStop.set(id, st.code);
-        matched++;
-      }
+      stations = ((await res.json()) as { payload: NsStation[] }).payload.filter((s) => s.land === "NL");
+      const matched = link();
       console.log(`[NS] ${matched} van ${stations.length} stations gekoppeld voor realtime treintijden`);
     } catch (err) {
       console.error("[NS] Stations ophalen mislukt, over 5 min opnieuw:", err instanceof Error ? err.message : err);
@@ -99,6 +109,11 @@ export function createNsRealtime(apiKey: string, stops: StopIndex) {
   }
 
   return {
+    /** Na een nieuwe dienstregeling: stations opnieuw koppelen (halte-ID's kunnen veranderd zijn). */
+    relink: (next: StopIndex) => {
+      currentStops = next;
+      if (stations.length) link();
+    },
     stationCode: (stopId: string) => codeByStop.get(stopId),
     departures: (code: string) => board("departures", code),
     arrivals: (code: string) => board("arrivals", code),

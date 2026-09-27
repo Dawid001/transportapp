@@ -13,15 +13,23 @@ type Gtfs = ReturnType<typeof openGtfs>;
 
 export type NsState = { updatedAt: number; vehicles: ApiVehicle[]; unmatched: number } | null;
 
-export function startNsPoller(gtfs: Gtfs, apiKey: string) {
+export function startNsPoller(getGtfs: () => Gtfs, apiKey: string) {
   // Eigen estimator: die van de bussen ruimt historie op van voertuigen die niet in zijn lijst zitten.
-  const motion = createMotionEstimator(gtfs.tripRoute);
+  // Bij een nieuwe dienstregeling (andere gtfs) een nieuwe estimator, anders verwijst hij naar de oude database.
+  let motionFor: Gtfs | null = null;
+  let motion: ReturnType<typeof createMotionEstimator> | null = null;
   let state: NsState = null;
   let lastError: string | null = null;
 
   async function poll(): Promise<number> {
     try {
       const trains = await fetchNsTrains(apiKey);
+      const gtfs = getGtfs();
+      if (gtfs !== motionFor || !motion) {
+        motion = createMotionEstimator(gtfs.tripRoute);
+        motionFor = gtfs;
+      }
+      const estimator = motion;
       const nowSec = Math.floor(Date.now() / 1000);
       // Na middernacht rijden de laatste treinen nog op de dienstdag van gisteren.
       const dates = [serviceDate(0), serviceDate(1)];
@@ -30,7 +38,7 @@ export function startNsPoller(gtfs: Gtfs, apiKey: string) {
         const tripId = dates.map((d) => gtfs.trainTrip(t.trainNumber, d)).find((id) => id) ?? undefined;
         const info = tripId ? gtfs.lookup(tripId) : null;
         const speedMs = t.speedKmh / 3.6;
-        const where = tripId ? motion.locate(tripId, t.lat, t.lng, speedMs) : null;
+        const where = tripId ? estimator.locate(tripId, t.lat, t.lng, speedMs) : null;
         return {
           id: `NS:${t.trainNumber}`,
           operator: t.type === "ARR" ? "ARR" : "NS",
@@ -51,7 +59,7 @@ export function startNsPoller(gtfs: Gtfs, apiKey: string) {
         };
       });
 
-      const { motions } = motion.update(
+      const { motions } = estimator.update(
         vehicles.map((v) => ({ ...v, measuredSpeed: v.speed })),
         nowSec,
       );

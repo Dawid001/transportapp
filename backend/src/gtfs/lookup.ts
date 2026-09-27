@@ -1,6 +1,6 @@
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { GTFS_DB, GTFS_DB_PENDING } from "./paths.js";
+import { GTFS_DB, GTFS_DB_PENDING, currentDbPath } from "./paths.js";
 
 export type Mode = "tram" | "metro" | "train" | "bus" | "ferry" | "other";
 
@@ -95,17 +95,17 @@ function simplify(coords: LngLat[], toleranceM: number): LngLat[] {
   return coords.filter((_, i) => keep[i]);
 }
 
-export function openGtfs() {
-  // Een import die klaar was terwijl de server draaide, staat als .new klaar (zie import.ts).
-  if (existsSync(GTFS_DB_PENDING)) {
+export function openGtfs(dbPath = currentDbPath()) {
+  // Oude opzet: een import die klaar was terwijl de server draaide, staat als gtfs.db.new klaar.
+  if (dbPath === GTFS_DB && existsSync(GTFS_DB_PENDING)) {
     rmSync(GTFS_DB, { force: true });
     renameSync(GTFS_DB_PENDING, GTFS_DB);
     console.log("Nieuwe GTFS-database geactiveerd.");
   }
-  if (!existsSync(GTFS_DB)) {
-    throw new Error(`Geen GTFS-database gevonden (${GTFS_DB}). Draai eerst: npm run gtfs:update`);
+  if (!existsSync(dbPath)) {
+    throw new Error(`Geen GTFS-database gevonden (${dbPath}). Draai eerst: npm run gtfs:update`);
   }
-  const db = new DatabaseSync(GTFS_DB, { readOnly: true });
+  const db = new DatabaseSync(dbPath, { readOnly: true });
 
   const byTrip = db.prepare(`
     SELECT r.route_short_name, r.route_type, r.route_color, r.route_text_color, a.agency_name,

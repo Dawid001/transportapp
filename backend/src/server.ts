@@ -3,19 +3,17 @@ import { writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fetchVehicles, RateLimitError } from "./fetchVehicles.js";
-import { openGtfs, type Mode } from "./gtfs/lookup.js";
-import { DATA_DIR } from "./gtfs/paths.js";
-import { createMotionEstimator } from "./motion.js";
+import type { Mode } from "./gtfs/lookup.js";
+import { cleanupOldVersions, currentDbPath, DATA_DIR } from "./gtfs/paths.js";
 import { startNsPoller } from "./nsPoller.js";
 import { createAlerts } from "./alerts.js";
-import { createDepartures } from "./departures.js";
-import { trainLabel } from "./ns.js";
+import { buildContext, type AppContext } from "./context.js";
+import { startGtfsUpdater } from "./gtfsUpdater.js";
 import { createNsRealtime } from "./nsRealtime.js";
-import { createPlanner, type PlanPoint } from "./planner.js";
+import type { Journey, PlanPoint } from "./planner.js";
 import { searchPlaces } from "./places.js";
-import { createStopIndex, type StopGroup } from "./stopIndex.js";
+import type { StopGroup } from "./stopIndex.js";
 import { tripStopTimes, vehicleDelay } from "./stopTimes.js";
-import { createTimetable } from "./timetable.js";
 import { fetchTripUpdates, type TripUpdateInfo } from "./tripUpdates.js";
 
 // Geheime instellingen (NS_API_KEY) uit backend/.env.
@@ -60,11 +58,9 @@ export type ApiVehicle = {
   delay?: number;
 };
 
-const gtfs = openGtfs();
-const motion = createMotionEstimator(gtfs.tripRoute);
-
 const nsKey = process.env.NS_API_KEY?.trim();
-const ns = nsKey && !nsKey.startsWith("plak-hier") ? startNsPoller(gtfs, nsKey) : null;
+// De poller vraagt de dienstregeling telkens via ctx op, zodat hij een wissel naar een nieuwe versie volgt.
+const ns = nsKey && !nsKey.startsWith("plak-hier") ? startNsPoller(() => ctx.gtfs, nsKey) : null;
 if (!ns) console.log("Geen NS_API_KEY in backend/.env: NS-treinen staan uit.");
 
 type Cache = { updatedAt: number; feedTimestamp: number; etag?: string; vehicles: ApiVehicle[] };
@@ -89,44 +85,37 @@ let lastError: string | null = null;
 
 let tripUpdates: { updatedAt: number; etag?: string; updates: Map<string, TripUpdateInfo> } | null = null;
 
-// Dienstregeling in het geheugen + haltezoeker (samen ~1,5 s bij het opstarten).
-const timetable = createTimetable(gtfs.db);
-const stopIndex = createStopIndex(gtfs.db, timetable);
-const departures = createDepartures({
-  db: gtfs.db,
-  timetable,
-  lookup: (tripId) => gtfs.lookup(tripId),
-  tripUpdate: (tripId) => tripUpdates?.updates.get(tripId),
+// Alles wat uit de dienstregeling komt (in het geheugen, haltezoeker, vertrektijden, planner) zit in één
+// context, die bij een nieuwe versie in zijn geheel wordt vervangen (zie swapTo en gtfsUpdater.ts).
+const live = {
+  tripUpdate: (tripId: string) => tripUpdates?.updates.get(tripId),
   liveTripIds: () => {
     const ids = new Set<string>();
     for (const v of cache?.vehicles ?? []) if (v.tripId) ids.add(v.tripId);
     for (const v of ns?.state?.vehicles ?? []) if (v.tripId) ids.add(v.tripId);
     return ids;
   },
-});
+};
+let ctx: AppContext = buildContext(currentDbPath(), live);
 
-const planner = createPlanner({
-  db: gtfs.db,
-  timetable,
-  lookup: (tripId) => gtfs.lookup(tripId),
-  lineLabel: (info, mode) => (mode === "train" ? trainLabel(info?.line, info?.line ?? "") : info?.line),
-  tripShape: (tripId) => {
-    const route = gtfs.tripRoute(tripId);
-    return route && !route.approximate ? route.shape : null;
-  },
-  realtime: (tripId, date) => {
-    const u = tripUpdates?.updates.get(tripId);
-    if (!u || (u.startDate && u.startDate !== date)) return undefined;
-    return {
-      canceled: u.canceled,
-      at: (sequence) => {
-        const st = u.stops.get(sequence);
-        if (!st || st.skipped) return undefined;
-        return { dep: st.departureTime, arr: st.arrivalTime ?? st.departureTime };
-      },
-    };
-  },
-});
+/** Overstappen op een nieuwe versie van de dienstregeling, zonder herstart. */
+function swapTo(dbPath: string) {
+  try {
+    const next = buildContext(dbPath, live);
+    next.planner.warm();
+    const old = ctx;
+    ctx = next;
+    nsRealtime?.relink(next.stopIndex);
+    console.log(`[GTFS] Nieuwe dienstregeling in gebruik: ${dbPath.split(/[\\/]/).pop()}`);
+    // Lopende verzoeken op de oude versie eerst laten afronden, dan sluiten en opruimen.
+    setTimeout(() => {
+      old.close();
+      cleanupOldVersions([next.dbPath]);
+    }, 60_000);
+  } catch (err) {
+    console.error("[GTFS] Nieuwe dienstregeling laden mislukt, de oude blijft in gebruik:", err);
+  }
+}
 
 /**
  * Begin- of eindpunt van een reis uit de query: een halte (`fromStop=<id>`) of een punt
@@ -135,7 +124,7 @@ const planner = createPlanner({
 function planPoint(params: URLSearchParams, prefix: "from" | "to"): PlanPoint | null {
   const stopId = params.get(`${prefix}Stop`);
   if (stopId) {
-    const stop = stopIndex.byId(stopId);
+    const stop = ctx.stopIndex.byId(stopId);
     return stop ? { name: stop.name, lat: stop.lat, lng: stop.lng, stopIds: stop.stopIds } : null;
   }
   const lat = Number(params.get(`${prefix}Lat`));
@@ -148,7 +137,7 @@ function planPoint(params: URLSearchParams, prefix: "from" | "to"): PlanPoint | 
 const alerts = createAlerts(ns ? nsKey : undefined);
 
 // Realtime treintijden (vertraging, spoor, uitval) via de NS Reisinformatie API.
-const nsRealtime = ns && nsKey ? createNsRealtime(nsKey, stopIndex) : null;
+const nsRealtime = ns && nsKey ? createNsRealtime(nsKey, ctx.stopIndex) : null;
 
 /** NS-realtime van een station voor het vertrekbord (leeg als het geen station is of NS uit staat). */
 async function trainBoard(stopIds: string[], kind: "departures" | "arrivals") {
@@ -157,12 +146,12 @@ async function trainBoard(stopIds: string[], kind: "departures" | "arrivals") {
 }
 
 /** Meldingen per reisdeel: op de in- en uitstaphalte, voor die lijn (en NS-storingen op die stations). */
-function addLegAlerts(journeys: ReturnType<typeof planner.plan>) {
+function addLegAlerts(journeys: Journey[]) {
   for (const j of journeys) {
     for (const leg of j.legs) {
       if (leg.type !== "transit") continue;
       const stopIds = [leg.from.stopId, leg.to.stopId].filter((x): x is string => !!x);
-      const routeId = gtfs.lookup(leg.tripId)?.routeId;
+      const routeId = ctx.gtfs.lookup(leg.tripId)?.routeId;
       const stationCodes = leg.mode === "train" && nsRealtime ? stopIds.map((id) => nsRealtime.stationCode(id)).filter((c): c is string => !!c) : undefined;
       const found = alerts.forStops(stopIds, {
         routeIds: routeId ? new Set([routeId]) : undefined,
@@ -176,13 +165,13 @@ function addLegAlerts(journeys: ReturnType<typeof planner.plan>) {
 }
 
 /** Treinstukken in reisadviezen aanvullen met NS-realtime: werkelijke tijden, spoor en uitval. */
-async function enrichTrainLegs(journeys: ReturnType<typeof planner.plan>) {
+async function enrichTrainLegs(journeys: Journey[]) {
   if (!nsRealtime) return;
   await Promise.all(
     journeys.flatMap((j) =>
       j.legs.map(async (leg) => {
         if (leg.type !== "transit" || leg.mode !== "train") return;
-        const nr = gtfs.lookup(leg.tripId)?.shortName;
+        const nr = ctx.gtfs.lookup(leg.tripId)?.shortName;
         if (!nr) return;
         const [deps, arrs] = await Promise.all([
           leg.from.stopId ? trainBoard([leg.from.stopId], "departures") : undefined,
@@ -236,7 +225,7 @@ async function poll(): Promise<number> {
     }
     const { feedTimestamp, vehicles } = feed;
     const enriched = vehicles.map((v): ApiVehicle => {
-      const info = gtfs.lookup(v.tripId, v.routeId);
+      const info = ctx.gtfs.lookup(v.tripId, v.routeId);
       return {
         id: v.id,
         operator: v.operator,
@@ -259,7 +248,7 @@ async function poll(): Promise<number> {
         timestamp: v.timestamp,
       };
     });
-    const { motions, stats } = motion.update(enriched, Date.now() / 1000);
+    const { motions, stats } = ctx.motion.update(enriched, Date.now() / 1000);
     for (const v of enriched) {
       const m = motions.get(v.id);
       if (m) {
@@ -338,6 +327,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/api/health") {
     return sendJson(res, cache ? 200 : 503, {
       ok: !!cache,
+      // Welke versie van de dienstregeling in gebruik is (wisselt zonder herstart, zie gtfsUpdater.ts).
+      gtfs: path.basename(ctx.dbPath),
       updatedAt: cache?.updatedAt ?? null,
       vehicles: cache?.vehicles.length ?? 0,
       lastError,
@@ -390,7 +381,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const timesMatch = url.pathname.match(/^\/api\/trips\/([^/]+)\/times$/);
   if (timesMatch) {
     const tripId = decodeURIComponent(timesMatch[1]);
-    const route = gtfs.tripRoute(tripId);
+    const route = ctx.gtfs.tripRoute(tripId);
     if (!route) return sendJson(res, 404, { error: "Rit niet gevonden in de dienstregeling" });
     return sendJson(res, 200, {
       ...tripStopTimes(route, tripUpdates?.updates.get(tripId), Date.now() / 1000),
@@ -400,7 +391,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
   const tripMatch = url.pathname.match(/^\/api\/trips\/([^/]+)$/);
   if (tripMatch) {
-    const route = gtfs.tripRoute(decodeURIComponent(tripMatch[1]));
+    const route = ctx.gtfs.tripRoute(decodeURIComponent(tripMatch[1]));
     if (!route) return sendJson(res, 404, { error: "Rit niet gevonden in de dienstregeling" });
     return sendJson(res, 200, route, 600);
   }
@@ -408,7 +399,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const lineMatch = url.pathname.match(/^\/api\/lines\/([^/]+)$/);
   if (lineMatch) {
     const line = decodeURIComponent(lineMatch[1]);
-    return sendJson(res, 200, { line, variants: gtfs.lineRoutes(line) }, 600);
+    return sendJson(res, 200, { line, variants: ctx.gtfs.lineRoutes(line) }, 600);
   }
 
   // Zoeken op haltes (eigen dienstregeling) en plaatsen/adressen (PDOK).
@@ -418,7 +409,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const lat = Number(url.searchParams.get("lat"));
     const lng = Number(url.searchParams.get("lng"));
     const near = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 ? { lat, lng } : undefined;
-    const stops = stopIndex.search(q, 6, near).map(publicStop);
+    const stops = ctx.stopIndex.search(q, 6, near).map(publicStop);
     const places = await searchPlaces(q, 5).catch((err) => {
       console.error("PDOK zoeken mislukt:", err instanceof Error ? err.message : err);
       return [];
@@ -433,7 +424,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!from || !to) return sendJson(res, 400, { error: "Van en naar zijn verplicht (halte of coördinaten)" });
     const time = Number(url.searchParams.get("time"));
     const at = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
-    const journeys = planner.plan(from, to, at, 5);
+    const journeys = ctx.planner.plan(from, to, at, 5);
     await enrichTrainLegs(journeys);
     addLegAlerts(journeys);
     // Rijdt er (voorlopig) niets meer, bv. midden in de nacht? Dan zeggen we dat met de eerste reis erbij.
@@ -453,21 +444,21 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/api/stops") {
     const bbox = parseBbox(url.searchParams.get("bbox"));
     if (!bbox || bbox === "invalid") return sendJson(res, 400, { error: "bbox is verplicht: minLng,minLat,maxLng,maxLat" });
-    return sendJson(res, 200, { stops: stopIndex.inBbox(bbox).map(publicStop) }, 3600);
+    return sendJson(res, 200, { stops: ctx.stopIndex.inBbox(bbox).map(publicStop) }, 3600);
   }
 
   const stopMatch = url.pathname.match(/^\/api\/stops\/([^/]+)(\/departures)?$/);
   if (stopMatch) {
-    const stop = stopIndex.byId(decodeURIComponent(stopMatch[1]));
+    const stop = ctx.stopIndex.byId(decodeURIComponent(stopMatch[1]));
     if (!stop) return sendJson(res, 404, { error: "Halte niet gevonden" });
     if (!stopMatch[2]) return sendJson(res, 200, publicStop(stop), 3600);
     const time = Number(url.searchParams.get("time"));
     const from = Number.isFinite(time) && time > 0 ? time : Math.floor(Date.now() / 1000);
-    const list = departures.forStop(stop, from, { trains: stop.modes.includes("train") ? await trainBoard(stop.stopIds, "departures") : undefined });
+    const list = ctx.departures.forStop(stop, from, { trains: stop.modes.includes("train") ? await trainBoard(stop.stopIds, "departures") : undefined });
     // Rijdt er de komende 1,5 uur niets? Dan het eerstvolgende vertrek (bv. morgenochtend) erbij.
-    const next = list.length === 0 ? departures.forStop(stop, from, { windowSec: 30 * 3600, limit: 1 })[0] : undefined;
+    const next = list.length === 0 ? ctx.departures.forStop(stop, from, { windowSec: 30 * 3600, limit: 1 })[0] : undefined;
     // Meldingen voor deze halte, alleen voor lijnen die hier (binnenkort) vertrekken of zonder lijn.
-    const routeIds = new Set(list.map((d) => gtfs.lookup(d.tripId)?.routeId).filter((r): r is string => !!r));
+    const routeIds = new Set(list.map((d) => ctx.gtfs.lookup(d.tripId)?.routeId).filter((r): r is string => !!r));
     const stationCodes = nsRealtime ? stop.stopIds.map((id) => nsRealtime.stationCode(id)).filter((c): c is string => !!c) : undefined;
     return sendJson(res, 200, {
       stop: publicStop(stop),
@@ -498,7 +489,10 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
 server.listen(PORT, () => {
   console.log(`API draait op http://localhost:${PORT}/api/vehicles`);
-  setTimeout(() => planner.warm(), 0);
+  setTimeout(() => ctx.planner.warm(), 0);
+  // Dienstregeling elke nacht bijwerken en zonder herstart overstappen.
+  startGtfsUpdater({ activePath: () => ctx.dbPath, onNewVersion: swapTo });
+  cleanupOldVersions([ctx.dbPath]);
   if (cache) {
     // Met bewaarde data wachten tot die een poll-interval oud is, anders lopen snelle herstarts tegen de 429 aan.
     const wait = Math.max(0, POLL_INTERVAL_MS - (Date.now() - cache.updatedAt));

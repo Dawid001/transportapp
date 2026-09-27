@@ -24,11 +24,11 @@ Het script haalt `https://gtfs.ovapi.nl/nl/vehiclePositions.pb` op, zet elk voer
 
 ```bash
 cd backend
-npm run gtfs:update   # downloadt de GTFS-zip (266 MB) alleen als er een nieuwe is, en bouwt data/gtfs.db (~8s)
+npm run gtfs:update   # eenmalig bij de eerste keer: downloadt de dienstregeling en bouwt de database (~2,5 min)
 npm run dev           # start de API op http://localhost:3001
 ```
 
-De GTFS van OVapi wordt elke nacht ververst. Draai `gtfs:update` dus dagelijks; zonder nieuwe versie doet het niets. Met `-- --force` importeer je opnieuw zonder te downloaden.
+De dienstregeling wordt daarna **automatisch** bijgewerkt door de backend (zie "Dienstregeling automatisch bijwerken" hieronder). Met `npm run gtfs:update -- --force` importeer je handmatig opnieuw zonder te downloaden; een draaiende backend neemt dat binnen een minuut over.
 
 ### Endpoints
 
@@ -77,7 +77,7 @@ MapLibre 6 draait in een web worker die Turbopack niet bundelt. `npm install` ko
 - **`shapes.txt`** (8,3 miljoen punten): één rij per route, met de punten als binaire Float32-lijst (~67 MB in plaats van 300 MB).
 - **`stop_times.txt`** (21 miljoen rijen): 1,09 miljoen ritten gebruiken samen maar ~20.000 unieke haltepatronen. Elk patroon wordt één keer opgeslagen en de ritten verwijzen ernaar. Tijden worden nog niet opgeslagen; die komen bij de ETA's.
 
-De import duurt ongeveer 70 seconden en de database wordt ongeveer 265 MB. Draait de server tijdens de import, dan staat de nieuwe database klaar als `gtfs.db.new` en wordt die bij de volgende serverstart actief (Windows kan een geopend bestand niet vervangen).
+De import duurt ongeveer 1,5 minuut en de database wordt ongeveer 275 MB.
 
 ### Endpoints
 
@@ -192,3 +192,13 @@ Per station de NS-vertrektijden en -aankomsttijden (60 s gecachet): werkelijke t
 - **Laatste rit**: het label "🌙 laatste rit" staat bij een vertrek als deze lijn in deze richting hier de komende 6 uur niet meer vertrekt. Dit wordt over de dienstdagen heen bekeken, zodat nachttreinen die op de volgende dienstdag staan meetellen.
 - **Planner**: vertrekt de eerste OV-reis pas meer dan 2 uur na het gevraagde tijdstip, dan staat er "🌙 Er rijdt nu niets meer. De eerste reis vertrekt morgen om 05:46" (`notice` in `/api/plan`). Reizen op een andere dag krijgen het label "morgen" of een datum.
 - Opties die eerder vertrekken maar niet eerder aankomen dan een andere optie, laat de planner weg (bijvoorbeeld 's nachts de laatste trein nemen en dan uren op de eerste bus wachten).
+
+## Dienstregeling automatisch bijwerken
+
+OVapi publiceert elke nacht een nieuwe dienstregeling, en de ritnummers in de live feeds passen alleen bij de nieuwste versie. Met een oude versie missen steeds meer voertuigen hun lijn en tijden. De backend houdt de dienstregeling daarom zelf actueel (`src/gtfsUpdater.ts`):
+
+- **Elke nacht om 04:30**, en bij het opstarten als de data ouder is dan een dag, draait hij `updateGtfs.ts` in een **apart proces**. Dat downloadt alleen als OVapi echt een nieuwe versie heeft (ETag), en de API blijft tijdens de import van ~1,5 minuut gewoon reageren.
+- **Elke import krijgt een eigen bestand** (`data/gtfs-20260927-131711.db`); `data/gtfs-current.txt` wijst naar de actuele versie. Zo hoeft nooit een geopend bestand vervangen te worden (dat kan niet op Windows).
+- **Wisselen zonder herstart**: elke minuut kijkt de backend of er een nieuwe versie actueel is (ook na een handmatige `gtfs:update`). Is dat zo, dan bouwt hij alles opnieuw op in een nieuwe context (`src/context.ts`), wisselt in één keer, en ruimt de oude versie een minuut later op.
+- De versie in gebruik staat in `GET /api/health` (`gtfs`).
+- Na een wissel duurt het 1–2 minuten tot bussen weer tussen updates door rijden (de snelheidshistorie begint opnieuw).

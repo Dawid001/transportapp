@@ -4,7 +4,8 @@ import type { Readable } from "node:stream";
 import { parse } from "csv-parse";
 import yauzl from "yauzl";
 import { importShapes, importStopPatterns, ROUTE_TABLES_SQL } from "./importRoutes.js";
-import { GTFS_DB, GTFS_DB_PENDING, GTFS_ZIP } from "./paths.js";
+import { DATA_DIR, GTFS_ZIP, newVersionName, setCurrentDb } from "./paths.js";
+import path from "node:path";
 
 // Welke bestanden en kolommen we 1-op-1 uit de GTFS-zip halen. shapes.txt en stop_times.txt
 // hebben een eigen, compactere import (zie importRoutes.ts).
@@ -87,12 +88,16 @@ async function importTable(db: DatabaseSync, table: string, stream: Readable): P
   return count;
 }
 
-/** Bouwt data/gtfs.db opnieuw op uit de GTFS-zip. */
-export async function importGtfs(): Promise<void> {
+/**
+ * Bouwt een nieuwe databaseversie op uit de GTFS-zip (data/gtfs-<datum-tijd>.db) en maakt die actueel.
+ * Een draaiende server wisselt daar zelf naartoe (zie gtfsUpdater.ts); de oude versie blijft tot dan bruikbaar.
+ */
+export async function importGtfs(): Promise<string> {
   if (!existsSync(GTFS_ZIP)) throw new Error(`Geen GTFS-zip gevonden op ${GTFS_ZIP}. Draai eerst de download.`);
 
-  // In een tijdelijke database bouwen, zodat de oude database bruikbaar blijft tot de import klaar is.
-  const tmpPath = `${GTFS_DB}.tmp`;
+  const name = newVersionName();
+  const finalPath = path.join(DATA_DIR, name);
+  const tmpPath = `${finalPath}.tmp`;
   rmSync(tmpPath, { force: true });
   const db = new DatabaseSync(tmpPath);
   db.exec("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;");
@@ -127,16 +132,8 @@ export async function importGtfs(): Promise<void> {
   db.exec("ANALYZE");
   db.close();
 
-  try {
-    rmSync(GTFS_DB, { force: true });
-    renameSync(tmpPath, GTFS_DB);
-    console.log(`GTFS-import klaar in ${((Date.now() - started) / 1000).toFixed(0)}s → ${GTFS_DB}`);
-  } catch {
-    // Op Windows kan een geopend bestand niet vervangen worden (de server heeft de database open).
-    // Dan zetten we hem klaar; openGtfs() wisselt hem om bij de volgende serverstart.
-    rmSync(GTFS_DB_PENDING, { force: true });
-    renameSync(tmpPath, GTFS_DB_PENDING);
-    console.log(`GTFS-import klaar in ${((Date.now() - started) / 1000).toFixed(0)}s. De server heeft de database open;`);
-    console.log("de nieuwe versie wordt actief zodra je de server herstart.");
-  }
+  renameSync(tmpPath, finalPath);
+  setCurrentDb(name);
+  console.log(`GTFS-import klaar in ${((Date.now() - started) / 1000).toFixed(0)}s → ${name}`);
+  return finalPath;
 }
